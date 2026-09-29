@@ -1,0 +1,66 @@
+# ---------------------------------------------------------------------------
+# Dependencies and build output
+# ---------------------------------------------------------------------------
+node_modules/
+follow-through-pro-19/.output/
+follow-through-pro-19/.wrangler/
+follow-through-pro-19/.nitro/
+follow-through-pro-19/.tanstack/
+follow-through-pro-19/.vinxi/
+follow-through-pro-19/dist/
+follow-through-pro-19/shots/
+springboot/target/
+cpp/build/
+# ONNX Runtime is downloaded, not vendored -- see cpp/README.md "Build".
+cpp/third_party/onnxruntime/
+
+# ---------------------------------------------------------------------------
+# Local state that must never be published
+# ---------------------------------------------------------------------------
+springboot/local-data/
+springboot/local-video-storage/
+*.local
+.env
+.env.*
+!.env.example
+.claude/settings.local.json
+
+# ---------------------------------------------------------------------------
+# Footage, datasets and model weights (gigabytes; see python/README.md for
+# how the models are trained and exported, and cpp/README.md for where the
+# binaries expect them)
+# ---------------------------------------------------------------------------
+# Datasets, extracted frames and downloaded weights are excluded wholesale;
+# the scripts that live beside them are kept.
+python/data-sets/
+python/yolo-weights/
+python/frames/*
+!python/frames/extract-frames.py
+python/videos/*
+!python/videos/yolo/
+# Training-run folders keep their metrics, plots and args; not the sample
+# batch mosaics (about 48 MB across the runs).
+python/runs/**/*_batch*.jpg
+python/=
+*.pt
+*.engine
+*.onnx
+*.zip
+*.MOV
+*.mov
+*.mp4
+*.avi
+*.webm
+
+# ---------------------------------------------------------------------------
+# Editors, OS, logs
+# ---------------------------------------------------------------------------
+.vscode/*
+!.vscode/settings.json
+python/.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+*.swp
+*~

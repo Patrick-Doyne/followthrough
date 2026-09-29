@@ -1,0 +1,1302 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+@import "./theme-properties.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * FollowThrough design system.
+ * Dark-primary, technical sports-performance analytics aesthetic.
+ * All colors are oklch semantic tokens. Never hard-code colors in components.
+ */
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+
+  --font-sans: "Inter var", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-foreground: var(--surface-foreground);
+  --color-card: var(--card);
+  --color-tier: var(--tier);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ring-offset-background: var(--background);
+
+  --color-court-surface: var(--court-surface);
+  --color-court-line: var(--court-line);
+  --color-court-paint: var(--court-paint);
+
+  --color-make: var(--make);
+  --color-make-foreground: var(--make-foreground);
+  --color-miss: var(--miss);
+  --color-miss-foreground: var(--miss-foreground);
+  --color-live: var(--live);
+  --color-warn: var(--warn);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-grid: var(--grid);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+:root {
+  --radius: 0.375rem;
+
+  --background: oklch(0.16 0.008 250);
+  --foreground: oklch(0.95 0.004 250);
+  --surface: oklch(0.2 0.009 250);
+  --surface-foreground: oklch(0.95 0.004 250);
+  --card: oklch(0.2 0.009 250);
+  /* A tier is a recess, so it is darker than the card it sits in, in
+     every palette. On a dark theme that is the page showing through;
+     on a light one the page is *lighter* than the card, so it is the
+     muted surface instead. Both are values the palette already
+     carries -- this names a role, it does not add a colour. */
+  --tier: oklch(0.16 0.008 250);
+  --card-foreground: oklch(0.95 0.004 250);
+  --popover: oklch(0.22 0.009 250);
+  --popover-foreground: oklch(0.95 0.004 250);
+
+  --primary: oklch(0.72 0.166 52);
+  --primary-foreground: oklch(0.17 0.02 52);
+  --secondary: oklch(0.27 0.011 250);
+  --secondary-foreground: oklch(0.93 0.004 250);
+  --muted: oklch(0.25 0.01 250);
+  --muted-foreground: oklch(0.68 0.012 250);
+  --accent: oklch(0.28 0.012 250);
+  --accent-foreground: oklch(0.95 0.004 250);
+  --destructive: oklch(0.575 0.2 25); /* 0.6 failed 4.5:1 against its own foreground */
+  --destructive-foreground: oklch(0.98 0.005 250);
+
+  --border: oklch(0.29 0.011 250);
+  --input: oklch(0.51 0.011 250); /* 0.3 was a 1.42:1 field outline, under WCAG 1.4.11 */
+  --ring: oklch(0.72 0.166 52);
+
+  --make: oklch(0.72 0.16 155);
+  --make-foreground: oklch(0.16 0.02 155);
+  --miss: oklch(0.57 0.2 22); /* 0.63 failed 4.5:1 against its own foreground */
+  --miss-foreground: oklch(0.97 0.01 22);
+  --live: oklch(0.68 0.19 22);
+  --warn: oklch(0.78 0.15 85);
+
+  /* The settings page's five section steps.
+   *
+   * On :root rather than on [data-settings] because a custom theme is
+   * applied as inline custom properties on <html>, and a stylesheet rule
+   * on a *descendant* shadows an inherited inline value. Declared here,
+   * the inline value wins and the sections follow the user's accent;
+   * declared on the wrapper, they stayed orange while the rest of the
+   * app changed colour. */
+  --sec: oklch(0.66 0.166 52);
+  --sec-on: oklch(0.17 0.02 52);
+
+  --court-surface: oklch(0.2 0.009 258);
+  --court-line: oklch(0.42 0.012 258);
+  --court-paint: oklch(0.25 0.012 258);
+
+  --chart-1: oklch(0.72 0.166 52);
+  --chart-2: oklch(0.72 0.13 220);
+  --chart-3: oklch(0.72 0.16 155);
+  --chart-4: oklch(0.75 0.14 300);
+  --chart-5: oklch(0.78 0.15 85);
+  --grid: oklch(0.28 0.011 250);
+
+  --sidebar: oklch(0.18 0.008 250);
+  --sidebar-foreground: oklch(0.88 0.006 250);
+  --sidebar-primary: oklch(0.72 0.166 52);
+  --sidebar-primary-foreground: oklch(0.17 0.02 52);
+  --sidebar-accent: oklch(0.24 0.01 250);
+  --sidebar-accent-foreground: oklch(0.96 0.004 250);
+  --sidebar-border: oklch(0.26 0.011 250);
+  --sidebar-ring: oklch(0.72 0.166 52);
+
+  /* The settings hero band. Dark in both themes -- broadcast graphics
+   * do not invert with the room, and the light theme has no other dark
+   * mass to anchor the page against -- but its hues follow the theme,
+   * which is what stops the largest block of colour on the page from
+   * being the one thing that never changes. Resolved in lib/theme.ts. */
+  --hero: oklch(0.185 0.014 250);
+  --hero-2: oklch(0.245 0.035 52);
+  --hero-fg: oklch(0.97 0.004 250);
+  --hero-muted: oklch(0.76 0.012 250);
+  --hero-art: oklch(0.72 0.166 52);
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+/*
+ * Light theme.
+ *
+ * Specificity note: the dark values above live on plain `:root`, so this has
+ * to be `:root.light` (0,2,0) rather than `.light` to win regardless of
+ * source order. The same applies to the contrast and density blocks below,
+ * which are ordered least- to most-specific on purpose.
+ *
+ * The orange primary is darkened from the dark theme's oklch(0.72 ...) to
+ * oklch(0.58 ...): the dark-theme value is tuned to glow against a near-black
+ * background and does not carry enough contrast against white for text or
+ * focus rings sitting on it.
+ */
+:root.light {
+  color-scheme: light;
+
+  --background: oklch(0.985 0.002 250);
+  --foreground: oklch(0.21 0.01 250);
+  --surface: oklch(1 0 0);
+  --tier: oklch(0.96 0.004 250);
+  --surface-foreground: oklch(0.21 0.01 250);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.01 250);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.01 250);
+
+  /* 0.57, not 0.58: white text on it measures 4.58:1, and 0.58 fell just
+     under at 4.28:1. The earlier value was tuned against a contrast
+     helper that double-applied the sRGB transfer function. */
+  --primary: oklch(0.57 0.16 52);
+  --primary-foreground: oklch(0.99 0.005 52);
+  --secondary: oklch(0.95 0.005 250);
+  --secondary-foreground: oklch(0.26 0.01 250);
+  --muted: oklch(0.96 0.004 250);
+  --muted-foreground: oklch(0.48 0.012 250);
+  --accent: oklch(0.94 0.006 250);
+  --accent-foreground: oklch(0.21 0.01 250);
+  --destructive: oklch(0.55 0.2 25);
+  --destructive-foreground: oklch(0.99 0.005 250);
+
+  /* `border` is decorative separation between panels, so it is tuned for
+     looks. `input` outlines a form control, which WCAG 1.4.11 requires to
+     reach 3:1 against its background -- now measured at 3.04:1 on the page
+     and 3.17:1 on cards. Do not lighten it without re-running
+     styles.contrast.test.ts. */
+  --border: oklch(0.9 0.005 250);
+  --input: oklch(0.645 0.006 250);
+  --ring: oklch(0.57 0.16 52);
+
+  --make: oklch(0.52 0.14 155);
+  --make-foreground: oklch(0.99 0.01 155);
+  --miss: oklch(0.55 0.19 22);
+  --miss-foreground: oklch(0.99 0.01 22);
+  --live: oklch(0.55 0.19 22);
+  --warn: oklch(0.58 0.13 85);
+
+  --chart-1: oklch(0.57 0.16 52);
+  --chart-2: oklch(0.52 0.13 220);
+  --chart-3: oklch(0.52 0.14 155);
+  --chart-4: oklch(0.55 0.15 300);
+  --chart-5: oklch(0.62 0.13 85);
+  --grid: oklch(0.91 0.005 250);
+
+  --sidebar: oklch(0.97 0.003 250);
+  --sidebar-foreground: oklch(0.26 0.01 250);
+  --sidebar-primary: oklch(0.57 0.16 52);
+  --sidebar-primary-foreground: oklch(0.99 0.005 52);
+  --sidebar-accent: oklch(0.93 0.006 250);
+  --sidebar-accent-foreground: oklch(0.18 0.01 250);
+  --sidebar-border: oklch(0.9 0.005 250);
+  --sidebar-ring: oklch(0.57 0.16 52);
+
+  --court-surface: oklch(0.96 0.004 250);
+  --court-line: oklch(0.62 0.012 250);
+  --court-paint: oklch(0.92 0.006 250);
+
+  /* Section steps for this palette. */
+  --sec: oklch(0.44 0.113 52);
+  --sec-on: oklch(0.99 0.005 52);
+
+  /* The settings hero band. Dark in both themes -- broadcast graphics
+   * do not invert with the room, and the light theme has no other dark
+   * mass to anchor the page against -- but its hues follow the theme,
+   * which is what stops the largest block of colour on the page from
+   * being the one thing that never changes. Resolved in lib/theme.ts. */
+  --hero: oklch(0.185 0.014 250);
+  --hero-2: oklch(0.245 0.035 52);
+  --hero-fg: oklch(0.97 0.004 250);
+  --hero-muted: oklch(0.76 0.012 250);
+  --hero-art: oklch(0.72 0.166 52);
+}
+
+/*
+ * High contrast.
+ *
+ * Pushes foreground/background apart and, more importantly, lifts the
+ * borders and muted text -- the tokens tuned for a calm look are the ones
+ * that fail first for low-vision users. Only the tokens that actually need
+ * to move are overridden, so the palette keeps its identity.
+ */
+:root[data-contrast="high"] {
+  --background: oklch(0.11 0.006 250);
+  --tier: oklch(0.11 0.006 250);
+  --foreground: oklch(1 0 0);
+  --surface: oklch(0.17 0.008 250);
+  --card: oklch(0.17 0.008 250);
+  --popover: oklch(0.17 0.008 250);
+  --secondary: oklch(0.25 0.01 250);
+  --secondary-foreground: oklch(1 0 0);
+  --muted-foreground: oklch(0.86 0.006 250);
+  --accent: oklch(0.27 0.012 250);
+  --primary: oklch(0.8 0.17 57);
+  --primary-foreground: oklch(0.14 0.02 57);
+  /* Both measured against this mode's own darker background: 3.11:1 on the
+     page and 3.09:1 on cards. The point of high contrast is that component
+     boundaries are perceivable, so these carry the 3:1 floor too. */
+  --border: oklch(0.71 0.012 250);
+  --input: oklch(0.71 0.012 250);
+  --ring: oklch(0.9 0.15 60);
+  --grid: oklch(0.5 0.011 250);
+  --sidebar: oklch(0.09 0.005 250);
+  --sidebar-foreground: oklch(1 0 0);
+  --sidebar-border: oklch(0.71 0.012 250);
+
+  /* Section steps for this palette. */
+  --sec: oklch(0.7 0.166 52);
+  --sec-on: oklch(0.14 0.02 52);
+
+  /* The settings hero band. Dark in both themes -- broadcast graphics
+   * do not invert with the room, and the light theme has no other dark
+   * mass to anchor the page against -- but its hues follow the theme,
+   * which is what stops the largest block of colour on the page from
+   * being the one thing that never changes. Resolved in lib/theme.ts. */
+  --hero: oklch(0.15 0.014 250);
+  --hero-2: oklch(0.19 0.035 52);
+  --hero-fg: oklch(1 0 250);
+  --hero-muted: oklch(0.88 0.012 250);
+  --hero-art: oklch(0.72 0.166 52);
+}
+
+:root.light[data-contrast="high"] {
+  --tier: oklch(0.96 0.004 250);
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.13 0.008 250);
+  --surface: oklch(1 0 0);
+  --card: oklch(1 0 0);
+  --popover: oklch(1 0 0);
+  --secondary: oklch(0.92 0.005 250);
+  --secondary-foreground: oklch(0.13 0.008 250);
+  --muted-foreground: oklch(0.34 0.012 250);
+  --accent: oklch(0.9 0.006 250);
+  --primary: oklch(0.47 0.15 50);
+  --primary-foreground: oklch(1 0 0);
+  --border: oklch(0.52 0.01 250);
+  --input: oklch(0.44 0.012 250);
+  --ring: oklch(0.35 0.14 50);
+  --grid: oklch(0.72 0.008 250);
+  --sidebar: oklch(0.98 0.002 250);
+  --sidebar-foreground: oklch(0.13 0.008 250);
+  --sidebar-border: oklch(0.52 0.01 250);
+
+  /* Section steps for this palette. */
+  --sec: oklch(0.38 0.098 52);
+  --sec-on: oklch(1 0 52);
+
+  /* The settings hero band. Dark in both themes -- broadcast graphics
+   * do not invert with the room, and the light theme has no other dark
+   * mass to anchor the page against -- but its hues follow the theme,
+   * which is what stops the largest block of colour on the page from
+   * being the one thing that never changes. Resolved in lib/theme.ts. */
+  --hero: oklch(0.15 0.014 250);
+  --hero-2: oklch(0.19 0.035 52);
+  --hero-fg: oklch(1 0 250);
+  --hero-muted: oklch(0.88 0.012 250);
+  --hero-art: oklch(0.72 0.166 52);
+}
+
+/*
+ * Density.
+ *
+ * Tailwind v4 derives every spacing utility from a single `--spacing` token
+ * (`p-4` is `calc(var(--spacing) * 4)`), so overriding it here rescales
+ * padding, margins, gaps and the fixed heights built from the same scale
+ * across the whole app -- no per-component density props, and nothing to
+ * keep in sync as components are added. The steps are a deliberate 7/8 and
+ * 9/8 of the default: enough to feel different, small enough that no layout
+ * built for the default breaks. The unit stays rem so density composes with
+ * the text-size setting instead of fighting it.
+ */
+:root[data-density="compact"] {
+  --spacing: 0.21875rem;
+}
+
+:root[data-density="comfortable"] {
+  --spacing: 0.25rem;
+}
+
+:root[data-density="spacious"] {
+  --spacing: 0.28125rem;
+}
+
+/*
+ * Reduced motion.
+ *
+ * Near-zero rather than `none` so that transitionend/animationend listeners
+ * still fire -- components that wait for one before cleaning up would hang
+ * forever otherwise. The media query covers the case where the boot script
+ * never ran (JavaScript disabled or failed): without it, someone who asked
+ * their OS for reduced motion would get the full animation set.
+ */
+:root[data-motion="reduce"],
+:root[data-motion="reduce"] *,
+:root[data-motion="reduce"] *::before,
+:root[data-motion="reduce"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-motion]),
+  :root:not([data-motion]) *,
+  :root:not([data-motion]) *::before,
+  :root:not([data-motion]) *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/*
+ * Touch target floor.
+ *
+ * Measured before writing this: the default button is `h-9`, which is 36px
+ * at default settings and 32px at compact density -- and `h-7` controls land
+ * at 24px. Nothing in the app reached the 44px floor.
+ *
+ * Applied only under `pointer: coarse` so a mouse-driven desktop keeps its
+ * density while a phone or tablet gets a real hit area. Sized in rem, not in
+ * `--spacing`, so the density setting can shrink padding but can never shrink
+ * the target below the floor; it still grows with the text-size setting,
+ * which is the right coupling.
+ *
+ * `:where()` keeps specificity at zero, so a component that genuinely needs
+ * to opt out still can.
+ */
+@media (pointer: coarse) {
+  :where(
+    button,
+    [role="button"],
+    [role="switch"],
+    [role="tab"],
+    [role="menuitem"],
+    [role="radio"],
+    [role="checkbox"],
+    select,
+    summary
+  ) {
+    min-height: 2.75rem;
+    min-width: 2.75rem;
+  }
+
+  /* Height only: a min-width here would break inline text flow and the
+     nav's full-width links do not need it. */
+  :where(nav a, [role="option"], input, textarea) {
+    min-height: 2.75rem;
+  }
+}
+
+/*
+ * Reading mode.
+ *
+ * Hides persistent navigation and caps the text column at a comfortable
+ * measure. Done in CSS off a root attribute rather than by conditionally
+ * rendering the sidebar, so toggling it never unmounts anything and never
+ * loses in-page state.
+ *
+ * The header stays: removing every way out of the page would trap someone
+ * who turned this on by accident, and the sidebar links are all reachable
+ * from the command palette and the account menu.
+ */
+:root[data-reading="on"] [data-app-sidebar] {
+  display: none;
+}
+
+:root[data-reading="on"] [data-page-container] {
+  max-width: 78ch;
+}
+
+/*
+ * Captions.
+ *
+ * The custom properties are written by applyCaptionStyle(). Defaults are
+ * inlined in each `var()` so captions are still legible in the moment
+ * before the provider has applied anything, and if a browser refuses
+ * `::cue` styling it simply falls back to its own rendering.
+ */
+video::cue {
+  font-size: var(--caption-size, 1.15rem);
+  font-family: var(--caption-font, var(--font-sans));
+  color: var(--caption-color, #ffffff);
+  background-color: var(--caption-background, rgba(0, 0, 0, 0.525));
+  text-shadow: var(--caption-shadow, none);
+  line-height: 1.35;
+}
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html {
+    /* Fallback only: the boot script sets this inline from the stored
+       preference. This is what a JavaScript-less load gets. */
+    color-scheme: dark;
+  }
+
+  /* High contrast needs focus to be unmissable, not just present. */
+  :root[data-contrast="high"] :focus-visible {
+    outline: 3px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "tnum";
+  }
+
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.015em;
+  }
+}
+
+@utility panel {
+  background-color: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+/**
+ * Opt-in touch-target floor.
+ *
+ * <p>The global rule under `pointer: coarse` covers real controls, but a
+ * label wrapping a visually-hidden input is a control too and matches
+ * none of those selectors. This marks those cases explicitly rather than
+ * widening the global selector to every label in the app.
+ *
+ * <p>Sized in rem, not `--spacing`, so density can shrink padding but
+ * never the hit area.
+ */
+@utility touch-target {
+  @media (pointer: coarse) {
+    min-height: 2.75rem;
+    min-width: 2.75rem;
+  }
+}
+
+@utility metric-value {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+  letter-spacing: -0.02em;
+}
+
+@utility label-caps {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.6875rem;
+  line-height: 1rem;
+  font-weight: 500;
+  color: var(--color-muted-foreground);
+}
+
+/*
+ * The palette cross-fade lives in theme-properties.css, which is
+ * generated -- it registers every token as an animatable <color> and
+ * transitions the tokens themselves on :root.
+ *
+ * <p>It used to be here, as a colour transition on every element in
+ * the document, and that was wrong in two measurable ways. Gradients
+ * jumped in a single frame while the flat colours beside them eased,
+ * because `background-image` will not interpolate between arbitrary
+ * gradients. And thousands of concurrent transitions took the page to
+ * about nine frames per second, so the fade arrived in steps.
+ *
+ * <p>Recharts is the one thing tokens cannot reach: it writes SVG
+ * presentation attributes, which do not resolve var(). Its colours are
+ * handed over as literals that change in one commit, so they get a
+ * matching transition here to fall in step with everything else.
+ */
+:root.theme-shifting .recharts-wrapper :is(path, line, rect, circle, text, tspan) {
+  transition:
+    fill 300ms ease,
+    stroke 300ms ease;
+}
+
+/* ==========================================================================
+   Page surface
+   --------------------------------------------------------------------------
+   The card and band language. It was trialled on the settings route
+   behind `[data-settings]`; the parts that turned out to be general --
+   `.sheet`, `.notch`, `.hero`, `.field-row` -- are now unscoped, so
+   every page can be built from the same pieces. Anything still scoped
+   to `[data-settings]` below is genuinely specific to that route: the
+   name plate, the toggle rows, the usage meters, the slider skin.
+
+   The idea is that a settings page is a set of *places*, not a list of
+   fields, so each section carries a hue and the page reads as blocks.
+   Colour is only ever used where it means something -- which section you
+   are in, whether a toggle is on, how close a usage meter is to its limit.
+
+   Hue lightness is 0.72 on dark (the same lightness as the orange accent,
+   so the five read as one family) and 0.55 on light. Both were solved
+   against the real card and background tokens for >=3:1 as an edge and
+   >=4.5:1 for the text that sits on them; see the settings-surface cases
+   in styles.contrast.test.ts.
+
+   The hues are spread deliberately -- 52 (the accent), 152, 200, 268,
+   328 -- rather than picked one at a time. Notifications started as gold
+   and had to move: no yellow is both dark enough for white text and
+   saturated, so at the light theme's 0.55 it came out olive.
+   ========================================================================== */
+
+/*
+ * The card.
+ *
+ * A 3px hue edge along the top and a solid hue tile in the header are the
+ * whole device: two saturated marks per section, everything else neutral.
+ * A card with a tinted body as well would be four marks and would read as
+ * decoration rather than as a label.
+ */
+.sheet {
+  position: relative;
+  background-color: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.sheet::before {
+  content: "";
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline: 0;
+  height: 3px;
+  background-color: var(--sec);
+}
+
+/* A card in a set where only one is the answer. The hue edge is the "this
+   one" mark, so the others drop it -- three identical coloured edges say
+   nothing. Their hue is left intact for the marks inside them. */
+.sheet-quiet::before {
+  background-color: var(--color-border);
+}
+
+/*
+ * A tier: a panel inside a card.
+ *
+ * A chart card is several different kinds of text stacked on one surface
+ * -- the numbers it is reporting, the key to its marks, the caveat about
+ * how the data was gathered -- and read as one undifferentiated column
+ * they all look equally important. A tier gives each of them its own
+ * plane, so the card reads as layers rather than as a wall.
+ *
+ * Depth comes from the three levels the design language already has and
+ * from nothing else. There are no soft shadows anywhere here:
+ *
+ *   keyline   the hairline, which is the only cue that survives the light
+ *             high-contrast palette, where the page and the card are both
+ *             pure white and a fill difference would be invisible
+ *   fill      the page showing through the card. Deliberately not a new
+ *             token: `background` on `card` is already solved for contrast
+ *             in all four palettes, so a tier inherits that guarantee
+ *             instead of asking for its own
+ *   lip       a 1px inside highlight along the bottom edge, at the 6% the
+ *             raised level uses for its own lip -- against `foreground`
+ *             rather than white so it reads in a light theme too
+ */
+.tier {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background-color: var(--color-tier);
+  box-shadow: inset 0 -1px 0 color-mix(in oklab, var(--color-foreground) 6%, transparent);
+}
+
+/*
+ * The tier carrying the chart's answer.
+ *
+ * A 2px accent edge on the leading side -- the "live" level of the
+ * elevation scale, and the same device the card uses along its top. One
+ * tier per card gets it: the numbers the chart exists to report. Give it
+ * to the legend and the caption as well and it stops meaning "start
+ * here".
+ */
+.tier-lead::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  width: 2px;
+  background-color: var(--sec);
+}
+
+/*
+ * A glow behind a card.
+ *
+ * The request was for vibrancy, and the first attempt got it wrong in a
+ * way worth recording: it was a radial painted *inside* the card, over
+ * its surface, which tints the card rather than lighting it. The
+ * correction was explicit -- behind each card, not over the top of it.
+ *
+ * So it is an outer bloom, cast outward from the card's edges in the
+ * theme accent, and the card's own opaque surface stays exactly the
+ * colour it was. Nothing is painted over content, which also means it
+ * cannot touch the contrast of anything sitting on the card.
+ *
+ * Two stops: a tight halo that reads as the edge catching light, and a
+ * wider, softer fall for the bloom itself. The accent rather than a grey
+ * -- a grey drop shadow is the thing this design language rules out, and
+ * a coloured backlight is not that.
+ */
+@utility glow {
+  box-shadow:
+    0 0 16px -6px color-mix(in oklab, var(--sec) var(--glow-near, 42%), transparent),
+    0 12px 34px -16px color-mix(in oklab, var(--sec) var(--glow-far, 62%), transparent);
+}
+
+/*
+ * Carried further on a light theme. The same mix that reads as a warm
+ * backlight against a dark page barely registers against a near-white
+ * one, because there is so little room between the accent and the paper
+ * for a glow to show in.
+ */
+:root.light {
+  --glow-near: 58%;
+  --glow-far: 82%;
+}
+
+/*
+ * A date field that matches the controls beside it.
+ *
+ * A native date input renders its own calendar button, in the browser's
+ * colours and at the browser's size, which is why a row of styled selects
+ * with two date inputs in it reads as a row of styled selects with two
+ * foreign controls dropped into the middle. The native button is removed
+ * and the field gets one of the app's own icons instead, which opens the
+ * same picker through showPicker().
+ *
+ * The placeholder text a date input shows when empty is also the
+ * browser's -- "mm/dd/yyyy" in the browser's locale, not the person's
+ * chosen one -- so it is dimmed to sit at the weight of a select's own
+ * placeholder rather than shouting at the same volume as a chosen value.
+ */
+.date-field::-webkit-calendar-picker-indicator {
+  display: none;
+}
+
+.date-field::-webkit-datetime-edit {
+  color: var(--color-muted-foreground);
+}
+
+.date-field:not(:placeholder-shown)::-webkit-datetime-edit,
+.date-field[data-filled="true"]::-webkit-datetime-edit {
+  color: var(--color-foreground);
+}
+
+/*
+ * The jersey plate: a square block of accent with the corner cut.
+ *
+ * The notch is the page's one shape idea, and it is reused at three
+ * scales -- the hero plate, the section tiles, the current-plan card --
+ * so it reads as a system rather than as an effect applied once.
+ */
+.notch {
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 0.55em), calc(100% - 0.55em) 100%, 0 100%);
+}
+
+.hero {
+  position: relative;
+  overflow: hidden;
+  /*
+   * One height for every page's band, so moving between routes does
+   * not shift the content below by a few dozen pixels each time. The
+   * content centres in whatever slack is left.
+   *
+   * The floor has to clear the tallest band at every density, or the
+   * taller one grows past it and the two stop matching -- which is
+   * what 11rem did: the bands agreed at compact and comfortable and
+   * diverged by 11-17px at spacious. Measured natural heights, which
+   * are constant in rem because everything in the band scales with
+   * it:
+   *
+   *            compact  comfortable  spacious
+   *   settings   7.44       8.50       9.56 rem
+   *   calendar  10.11      10.91      11.70 rem
+   *
+   * So 12rem clears the worst case with a little room for a future
+   * band that carries slightly more. In rem, so it tracks the
+   * text-size setting rather than clipping at the larger steps.
+   */
+  min-height: 12rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  /* Two stops in different hue families -- the base's at one end, the
+     accent's at the other -- so the band reads as coloured rather than
+     as a flat dark rectangle. */
+  background-image: linear-gradient(108deg, var(--hero) 0%, var(--hero-2) 100%);
+  color: var(--hero-fg);
+  border-radius: var(--radius);
+}
+
+/* The same 3px accent edge every card carries, so the band belongs to
+   the page rather than sitting on top of it. */
+.hero::after {
+  content: "";
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline: 0;
+  height: 3px;
+  background-color: var(--sec);
+}
+
+/* The band's artwork, whatever the page draws there.
+
+   Line art, not a decorative gradient, and it is the page's own subject
+   rather than one house image on every screen: the settings band shows
+   a half court, the calendar band shows a calendar. Set low enough to
+   never compete with what is on top of it. */
+.hero-art {
+  position: absolute;
+  inset-block-start: 50%;
+  /* Pushed past the edge so the baseline is off-frame and what remains in
+     the hero is the arc sweeping in -- a deliberate crop rather than a
+     court that happens to be cut off. */
+  inset-inline-end: 1rem;
+  translate: 0 -50%;
+  height: 104%;
+  /* Each drawing sets its own, matching its viewBox, so nothing is
+     stretched -- a squashed court stops looking like a court. */
+  aspect-ratio: var(--hero-art-ratio, 50 / 26);
+  /* Drawn in the accent, not in white: it is the largest shape in the
+     band, so it is most of what makes the band feel coloured. */
+  color: var(--hero-art);
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+/* On a phone the band is only as wide as the screen and carries two
+   rows of controls, so the drawing has to be sized by width rather
+   than by height. Driving it from height works for a 2:1 court and
+   makes a near-square calendar almost as wide as the band, which put
+   its grid directly behind the figures. */
+@media (max-width: 640px) {
+  .hero-art {
+    inset-inline-end: -10%;
+    height: auto;
+    width: 58%;
+    opacity: 0.16;
+  }
+}
+
+/*
+ * A segmented control sitting on the band.
+ *
+ * <p>It cannot use `bg-surface` the way the same control does on the
+ * page: the band is dark in both themes, so in light mode the page's
+ * surface would be a near-white slab dropped onto it. It gets the same
+ * black scrim the name plate's hover veil uses, which reads correctly
+ * against the band whatever the theme, and keeps the control opaque so
+ * the artwork behind it cannot show through the labels.
+ */
+.hero-rail {
+  background-color: oklch(0 0 0 / 0.3);
+}
+
+/*
+ * The band on the auth pages.
+ *
+ * <p>Every other band is a header strip a few rem tall carrying a line
+ * of text, so `.hero` centres its content. This one is the full height
+ * of the window and its subject is the logo, which wants the optical
+ * centre to itself -- a greeting above it, the figures below it. That
+ * has to be declared here rather than as a `justify-between` utility:
+ * `.hero` is unlayered, so it outranks any Tailwind layout class put on
+ * the same element, and the utility silently does nothing.
+ */
+/*
+ * The card the auth forms sit in.
+ *
+ * <p>Softer and roomier than a card in the app: this is the only card
+ * on its page, it is the thing you came to use, and at the app's own
+ * radius sitting on a bare page it read as a box drawn around some
+ * fields. Both figures come off the existing scale -- `--radius` plus
+ * 8px is `--radius-2xl` -- rather than being picked to taste.
+ *
+ * <p>It has to be CSS rather than a `rounded-2xl` utility because
+ * `.sheet` is declared outside Tailwind's layers and its own
+ * `border-radius` would win.
+ */
+.auth-card {
+  border-radius: var(--radius-2xl);
+}
+
+/*
+ * A field on a form that is the page.
+ *
+ * <p>Taller than a field in a settings row, because there are three of
+ * them rather than thirty and they are what the screen is for. The
+ * radius steps up with the card's.
+ */
+.field {
+  border-radius: var(--radius-lg);
+}
+
+/*
+ * The logo, before the right colour exists.
+ *
+ * <p>On a themed account the server's markup carries the artwork in its
+ * shipped orange, because re-hueing it is a canvas pass and the canvas
+ * needs React. The browser paints that markup long before the bundle
+ * lands -- measured at about 370ms of visible orange on a reload -- and
+ * no amount of care inside a React effect can reach a paint that
+ * happened before React existed.
+ *
+ * <p>So the boot script raises this flag in the document head, from
+ * storage, and the mark is simply not drawn until the hook that re-hues
+ * it takes the flag down. Nothing moves while it is hidden: the box is
+ * set by the artwork's aspect ratio, not by the image.
+ */
+:root[data-brand-tint="pending"] .brand-artwork {
+  opacity: 0;
+}
+
+/*
+ * The logo, while the palette is changing under it.
+ *
+ * <p>Re-hueing the artwork is a canvas pass, so the new image arrives
+ * about 75ms after the tokens start moving -- measured, on a palette
+ * fade that runs for 300ms. Swapped outright that lands as a snap in
+ * the middle of everything else easing, which is what "flashes of
+ * different colors at different parts" is describing. Fading the new
+ * artwork in over the same 300ms the tokens use puts the mark back
+ * inside the transition instead of beside it.
+ *
+ * <p>300ms and `ease` are the palette fade's own figures, from
+ * theme-properties.css. Anyone who asked not to be shown motion gets
+ * the swap, the same as they get the palette change.
+ */
+.brand-fade {
+  transition: opacity 300ms ease;
+}
+
+:root[data-motion="reduce"] .brand-fade {
+  transition: none;
+}
+
+.auth-band {
+  justify-content: space-between;
+}
+
+/*
+ * The accent pooled behind the logo.
+ *
+ * <p>The logo is lit artwork, and lit artwork needs something to be lit
+ * against -- the same reason the name plate is a dark well rather than a
+ * slab of accent. This is the `glow` utility's idea turned into a
+ * ground instead of a box-shadow, and it reuses that utility's own two
+ * strengths so the numbers are decided in one place. In the accent, so
+ * it moves with the theme: the largest wash of colour on the first
+ * screen anyone sees should not be the one thing that ignores their
+ * palette.
+ */
+.auth-band::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(
+    62% 46% at 50% 45%,
+    color-mix(in oklab, var(--sec) var(--glow-near, 42%), transparent) 0%,
+    color-mix(in oklab, var(--sec) var(--glow-far, 62%), transparent) 38%,
+    transparent 74%
+  );
+  opacity: 0.16;
+  pointer-events: none;
+}
+
+/*
+ * Every block set into a card uses this.
+ *
+ * <p>Before, an inset block was whatever its author reached for: a solid
+ * border here, a dashed one there, a divided list somewhere else. They
+ * are all the same thing -- a row of settings inside a section -- so they
+ * get one treatment, and the eye stops reading the differences as
+ * meaningful.
+ */
+.field-row {
+  border: 1px solid var(--color-border);
+  border-inline-start: 3px solid transparent;
+  border-radius: var(--radius);
+}
+
+/* A worked example rather than a control: same shape, quieter fill, so it
+   reads as output and not as something to change. */
+.field-note {
+  border: 1px solid var(--color-border);
+  border-inline-start: 3px solid color-mix(in oklab, var(--sec) 45%, transparent);
+  border-radius: var(--radius);
+  background-color: color-mix(in oklab, var(--color-foreground) 3%, transparent);
+}
+
+/*
+ * A tab panel arrives rather than appears.
+ *
+ * <p>Switching section swapped one screenful of cards for another in a
+ * single frame. A short rise-and-fade is enough to say the content
+ * changed, and it is short enough not to be in the way of anyone
+ * switching tabs quickly.
+ */
+@keyframes settings-panel-in {
+  from {
+    opacity: 0;
+    translate: 0 0.375rem;
+  }
+}
+
+[data-settings] [role="tabpanel"][data-state="active"] {
+  animation: settings-panel-in 220ms cubic-bezier(0.22, 0.8, 0.3, 1);
+}
+
+:root[data-motion="reduce"] [data-settings] [role="tabpanel"][data-state="active"] {
+  animation: none;
+}
+
+/*
+ * The name plate.
+ *
+ * <p>A dark well with the accent pooled behind whatever sits in it,
+ * rather than a flat block of accent. The mark is a lit sphere now, and
+ * a lit sphere needs somewhere to be lit against -- on a solid accent
+ * fill it had nothing to stand off.
+ *
+ * <p>An uploaded logo drops the pool. It is there to light the ball;
+ * behind an arbitrary crest it is just a colour cast over someone
+ * else's artwork.
+ */
+/*
+ * The name plate has no fill of its own.
+ *
+ * <p>It used to be a dark well with the accent pooled behind the mark,
+ * from when the mark was a lit sphere that needed something to stand
+ * off. Against the hero band that well is a black square: the band is
+ * a gradient and the plate was a flat colour darker than either end of
+ * it, so it cut a hard rectangle out of the card.
+ *
+ * <p>Transparent rather than set to `--hero`, because the band is a
+ * gradient and any single colour would match it at exactly one
+ * horizontal position. The mark carries its own halo, so nothing is
+ * lost by dropping the pool.
+ */
+[data-settings] .plate {
+  background: none;
+}
+
+/*
+ * The name plate, when it can be changed.
+ *
+ * <p>Same idea as an interactive row: hovering or focusing it says so,
+ * rather than leaving the cursor to carry the whole message. The plate
+ * is the most obvious thing on the page to click to change your logo,
+ * so it had to actually be clickable.
+ */
+[data-settings] .plate-edit {
+  position: relative;
+  transition: box-shadow 140ms;
+}
+
+[data-settings] .plate-edit:hover,
+[data-settings] .plate-edit:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 3px var(--hero-2),
+    0 0 0 5px var(--sec);
+}
+
+[data-settings] .plate-edit-veil {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  /* align-content, not place-items: two children in a grid with no
+     explicit rows get half the plate each, which pushed the icon and
+     its label to opposite ends of it. */
+  align-content: center;
+  justify-items: center;
+  gap: 0.25rem;
+  background-color: oklch(0 0 0 / 0.72);
+  color: oklch(1 0 0);
+  opacity: 0;
+  /* Settles rather than snaps: a little longer than the eye needs, on
+     an ease-out, so arriving at the plate feels like the panel coming
+     to meet you instead of a state flipping. */
+  transition:
+    opacity 220ms cubic-bezier(0.22, 0.8, 0.3, 1),
+    backdrop-filter 220ms cubic-bezier(0.22, 0.8, 0.3, 1);
+  backdrop-filter: blur(0);
+}
+
+/* The icon and label rise the last few pixels as the veil arrives, and
+   are staggered behind it so the whole thing reads as one movement. */
+[data-settings] .plate-edit-veil > * {
+  translate: 0 0.35rem;
+  opacity: 0;
+  transition:
+    translate 240ms cubic-bezier(0.22, 0.8, 0.3, 1) 40ms,
+    opacity 240ms cubic-bezier(0.22, 0.8, 0.3, 1) 40ms;
+}
+
+[data-settings] .plate-edit:hover .plate-edit-veil,
+[data-settings] .plate-edit:focus-visible .plate-edit-veil {
+  opacity: 1;
+  backdrop-filter: blur(1.5px);
+}
+
+[data-settings] .plate-edit:hover .plate-edit-veil > *,
+[data-settings] .plate-edit:focus-visible .plate-edit-veil > * {
+  translate: 0 0;
+  opacity: 1;
+}
+
+/* The mark itself eases back a touch, so the plate has depth rather
+   than a lid dropping onto it. */
+[data-settings] .plate-edit > :not(.plate-edit-veil) {
+  transition: scale 260ms cubic-bezier(0.22, 0.8, 0.3, 1);
+}
+
+[data-settings] .plate-edit:hover > :not(.plate-edit-veil),
+[data-settings] .plate-edit:focus-visible > :not(.plate-edit-veil) {
+  scale: 0.94;
+}
+
+:root[data-motion="reduce"] [data-settings] .plate-edit,
+:root[data-motion="reduce"] [data-settings] .plate-edit-veil,
+:root[data-motion="reduce"] [data-settings] .plate-edit-veil > *,
+:root[data-motion="reduce"] [data-settings] .plate-edit > :not(.plate-edit-veil) {
+  transition: none;
+}
+
+/* The veil still appears and still says what it does; only the movement
+   goes. Its contents must not stay translated and invisible. */
+:root[data-motion="reduce"] [data-settings] .plate-edit-veil > * {
+  translate: 0 0;
+  opacity: 1;
+}
+
+:root[data-motion="reduce"] [data-settings] .plate-edit:hover > :not(.plate-edit-veil) {
+  scale: 1;
+}
+
+/*
+ * A row that does something when you click it says so before you click.
+ *
+ * <p>A pointer cursor is the only affordance these rows had, which asks
+ * the person to already have their mouse on the thing to find out it is
+ * a thing -- and says nothing at all on a touch screen or to anyone
+ * navigating by keyboard. So an interactive row lifts its border to the
+ * accent and washes its background on hover and on focus-within, and
+ * carries a hint that appears with it.
+ */
+[data-settings] .field-row[data-interactive] {
+  cursor: pointer;
+  transition:
+    background-color 120ms,
+    border-color 120ms;
+}
+
+[data-settings] .field-row[data-interactive]:hover,
+[data-settings] .field-row[data-interactive]:focus-within {
+  border-color: color-mix(in oklab, var(--sec) 55%, var(--color-border));
+  border-inline-start-color: var(--sec);
+  background-color: color-mix(in oklab, var(--sec) 7%, transparent);
+}
+
+/*
+ * The hint opens to the right of the value and slides it aside.
+ *
+ * <p>It used to fade in to the left of the hex, which left the hex
+ * sitting still while something appeared beside it -- the value looked
+ * pinned rather than making room. Animating the grid track means the
+ * hint actually takes up space as it arrives, so the hex moves over for
+ * it, which is the motion the eye expects.
+ *
+ * <p>A grid track rather than width or margin: 0fr to 1fr animates
+ * without needing the hint's width to be known, and does not reflow the
+ * rest of the row.
+ */
+[data-settings] .row-hint {
+  display: grid;
+  grid-template-columns: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-columns 160ms cubic-bezier(0.2, 0.8, 0.3, 1),
+    opacity 120ms;
+}
+
+[data-settings] .row-hint > * {
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+[data-settings] .field-row[data-interactive]:hover .row-hint,
+[data-settings] .field-row[data-interactive]:focus-within .row-hint {
+  grid-template-columns: 1fr;
+  opacity: 1;
+}
+
+:root[data-motion="reduce"] [data-settings] .row-hint,
+:root[data-motion="reduce"] [data-settings] .field-row[data-interactive] {
+  transition: none;
+}
+
+/* Never hidden from the people who most need to be told. */
+:root[data-contrast="high"] [data-settings] .row-hint {
+  grid-template-columns: 1fr;
+  opacity: 1;
+}
+
+/*
+ * A toggle row states what it is doing without being read.
+ *
+ * On: hue edge plus an 8% wash. Off: nothing. The switch alone was the
+ * only signal before, which meant scanning fifteen of them one at a time.
+ */
+[data-settings] .toggle-row {
+  border: 1px solid var(--color-border);
+  border-inline-start: 3px solid transparent;
+  border-radius: var(--radius);
+  transition:
+    background-color var(--tw-duration, 150ms),
+    border-color var(--tw-duration, 150ms);
+}
+
+[data-settings] .toggle-row[data-on="true"] {
+  border-inline-start-color: var(--sec);
+  background-color: color-mix(in oklab, var(--sec) 8%, transparent);
+}
+
+:root[data-contrast="high"] [data-settings] .toggle-row[data-on="true"] {
+  background-color: transparent;
+  border-color: var(--sec);
+}
+
+:root[data-motion="reduce"] [data-settings] .toggle-row {
+  transition: none;
+}
+
+/*
+ * Controls inside a section wear that section's hue.
+ *
+ * The primitives all reach for --primary, which is correct everywhere
+ * else in the app but means a violet card full of orange switches and
+ * sliders. Restated here rather than parameterised in the primitives:
+ * this is a property of the settings surface, and the primitives are
+ * shared with routes that have no sections.
+ */
+[data-settings] .toggle-row[data-on="true"] [role="switch"][data-state="checked"] {
+  background-color: var(--sec);
+}
+
+[data-settings] [data-slot="slider-range"],
+[data-settings] [role="slider"] {
+  background-color: var(--sec);
+  border-color: var(--sec);
+}
+
+[data-settings] [data-slot="slider-track"] {
+  background-color: color-mix(in oklab, var(--sec) 22%, transparent);
+}
+
+/*
+ * A slider glides to its new value instead of snapping to it.
+ *
+ * <p>Only when it is not being dragged. Radix positions the thumb from
+ * the value, so transitioning that position while a pointer is down
+ * makes the thumb trail the cursor, which feels broken rather than
+ * smooth. `:active` on the thumb marks the drag, and :has lets the fill
+ * turn its transition off at the same moment.
+ */
+[data-slot="slider-root"] [data-slot="slider-range"],
+[data-slot="slider-root"] [role="slider"] {
+  transition: all 130ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+[data-slot="slider-root"]:has([role="slider"]:active) [data-slot="slider-range"],
+[data-slot="slider-root"] [role="slider"]:active {
+  transition: none;
+}
+
+:root[data-motion="reduce"] [data-slot="slider-root"] [data-slot="slider-range"],
+:root[data-motion="reduce"] [data-slot="slider-root"] [role="slider"] {
+  transition: none;
+}
+
+[data-settings] [role="slider"] {
+  /* The thumb keeps a pale centre so it stays visible against its own
+     filled range. */
+  background-color: var(--color-background);
+}
+
+/*
+ * Usage meters.
+ *
+ * Twenty discrete slots rather than a continuous bar: a segmented meter
+ * can be counted, and "17 of 20 lit" is legible at a glance in a way that
+ * a bar at 84% is not. The fill colour carries the severity, so the row
+ * that needs attention is the one that is red -- previously all three
+ * were the same orange whether they were at 36% or 70%.
+ */
+[data-settings] .meter {
+  display: flex;
+  gap: 2px;
+  height: 0.75rem;
+}
+
+[data-settings] .meter-slot {
+  flex: 1;
+  border-radius: 1px;
+  background-color: color-mix(in oklab, var(--color-foreground) 12%, transparent);
+}
+
+[data-settings] .meter-slot[data-lit="true"] {
+  background-color: var(--meter);
+}

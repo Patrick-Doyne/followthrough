@@ -180,9 +180,18 @@ frontend's dev dependencies.
   `[KVS] Peer connection CLOSED.` you may see one `dataChannelSend failed:
   0x...` — the last in-flight telemetry send losing to the closing
   connection. The process stays up and re-arms.
-- **The live pipeline assumes 30 fps** for the incoming camera stream (it
-  has no file to query); frame timings in the overlay are computed from
-  that.
+- **The live pipeline measures its frame rate** from the arrival interval
+  of the decoded frames (a running average, warmed up over the first 30
+  frames), so a 60 fps phone and a 30 fps webcam both get correct flight
+  and apex times; the `[PERF]` lines print it as `stream_fps`. The browser
+  asks the camera for the back-facing 4K60 as a preference, prefers H.264
+  (the codec phones encode in hardware), caps the upload at 40 Mbit/s so
+  4K is not silently downscaled, and shows the encoder it got (name,
+  size, rate, ms per frame) under the clock on the Live page.
+- **H.264 decode uses NVDEC** (`h264_cuvid`) when libavcodec has it, which
+  the system package does under WSL2; otherwise it falls back to software
+  decoding on four frame threads, which adds three frames of latency and
+  is logged as such at startup.
 - **Package manager.** The frontend uses npm and commits
   `package-lock.json`; there is no bun lockfile any more.
 

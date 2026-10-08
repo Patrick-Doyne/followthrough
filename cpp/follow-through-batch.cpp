@@ -1493,6 +1493,10 @@ int main(int argc, char** argv) {
             std::chrono::duration<double, std::milli>(t4 - t_before_court).count()
             - court_infer_ms_this_frame;
 
+        // Crop, preprocess and inference inside the pose block are timed on their
+        // own; the pose decode figure below is the remainder of the block.
+        double pose_crop_infer_ms_this_frame = 0.0;
+
         // ---- pose: crop + preprocess + infer + decode -- captures
         // all six tracked keypoints (shoulders, elbows, wrists) into
         // frame-scoped variables for the JSON schema; the wrists are
@@ -1554,6 +1558,8 @@ int main(int argc, char** argv) {
 
                 auto tp2 = std::chrono::steady_clock::now();
                 t_infer_pose += std::chrono::duration<double, std::milli>(tp2 - tp1).count();
+                pose_crop_infer_ms_this_frame =
+                    std::chrono::duration<double, std::milli>(tp2 - tp0).count();
 
                 size_t best_row = 0;
                 float best_conf = -1.0f;
@@ -1608,7 +1614,9 @@ int main(int argc, char** argv) {
         }
 
         auto t_after_pose = std::chrono::steady_clock::now();
-        t_decode_pose += std::chrono::duration<double, std::milli>(t_after_pose - t4).count();
+        t_decode_pose +=
+            std::chrono::duration<double, std::milli>(t_after_pose - t4).count()
+            - pose_crop_infer_ms_this_frame;
 
         // ------------------------------------------------------
         // SHOT START DETECTION (release evaluation) -- unchanged,

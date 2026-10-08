@@ -126,8 +126,16 @@ js/mock-websocket.js  <──ready/offer/answer/ice──>  follow_through_webrt
   training session, and a reloaded browser resynchronises to the pipeline's
   running totals.
 - The frame queue is two deep, so a slow inference loop applies
-  backpressure instead of drifting away from real time. The backend assumes
-  30 fps for the live stream.
+  backpressure instead of drifting away from real time. The backend
+  measures the stream's frame rate from the arrival interval of the
+  decoded frames, so timings follow the real camera rate.
+- The browser asks for the back-facing camera at 4K60 as a preference,
+  puts H.264 first in the codec preference (the codec phones encode in
+  hardware), caps the upload at 40 Mbit/s so 4K is not downscaled on a
+  LAN, and reads the sender's encoder statistics (implementation, output
+  size, rate, encode time per frame) into `hooks/use-live-health.ts`,
+  which the Live page shows under the clock. The backend decodes with
+  NVDEC when libavcodec has it.
 - On the page, **every number comes from the DataChannel**: the score bug
   and counters (`hooks/use-live-score.ts`), the shot feed
   (`components/video/ShotFeed.tsx`), the running-percentage chart and the

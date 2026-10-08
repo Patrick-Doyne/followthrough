@@ -62,6 +62,98 @@ interface Attempt {
 }
 export type WebRTCStateListener = (state: WebRTCConnectionState, detail: string) => void;
 
+/**
+ * What the browser's encoder is doing with the camera track, from the
+ * sender's `outbound-rtp` statistics. `encodeMsPerFrame` is the mean
+ * encode time between two readings, so it needs a previous sample.
+ */
+export interface EncoderStats {
+  /** The browser's name for its encoder: a hardware one on a phone
+   * (VideoToolbox, MediaCodec, ExternalEncoder), OpenH264 when software. */
+  implementation: string | null;
+  codec: string | null;
+  width: number | null;
+  height: number | null;
+  framesPerSecond: number | null;
+  /** Mean milliseconds the encoder spent per frame since the previous sample. */
+  encodeMsPerFrame: number | null;
+  /** "none" when the encoder keeps the requested resolution and rate;
+   * "cpu" or "bandwidth" when WebRTC is cutting one of them. */
+  qualityLimitation: string | null;
+}
+
+/** One line for the live page's HUD: "MediaCodec · 3840×2160 · 60 fps · 4.1 ms/frame".
+ * Parts the browser has not reported yet are left out. */
+export function describeEncoderStats(encoder: EncoderStats): string {
+  const parts: string[] = [];
+  if (encoder.implementation) parts.push(encoder.implementation);
+  if (encoder.width && encoder.height) parts.push(`${encoder.width}×${encoder.height}`);
+  if (encoder.framesPerSecond != null) parts.push(`${Math.round(encoder.framesPerSecond)} fps`);
+  if (encoder.encodeMsPerFrame != null)
+    parts.push(`${encoder.encodeMsPerFrame.toFixed(1)} ms/frame`);
+  if (encoder.qualityLimitation && encoder.qualityLimitation !== "none") {
+    parts.push(`${encoder.qualityLimitation}-limited`);
+  }
+  return parts.join(" · ");
+}
+
+/** The upload bit-rate cap. WebRTC's default is a few megabits, which is
+ * far too low for 4K60 and makes it downscale silently; 40 Mbit/s keeps 4K
+ * intact on a LAN and leaves the real limit to be the encoder. */
+const MAX_VIDEO_BITRATE_BPS = 40_000_000;
+
+/**
+ * Pure: the encoder statistics from a stats report, given the previous
+ * report's counters so a per-frame encode time can be formed.
+ */
+export function parseEncoderStats(
+  report: Iterable<Record<string, unknown>>,
+  previous: { totalEncodeTime: number; framesEncoded: number } | null,
+): { stats: EncoderStats; counters: { totalEncodeTime: number; framesEncoded: number } } | null {
+  let outbound: Record<string, unknown> | null = null;
+  const codecs = new Map<string, string>();
+  for (const entry of report) {
+    if (entry["type"] === "outbound-rtp" && entry["kind"] === "video") outbound = entry;
+    if (
+      entry["type"] === "codec" &&
+      typeof entry["id"] === "string" &&
+      typeof entry["mimeType"] === "string"
+    ) {
+      codecs.set(entry["id"], entry["mimeType"]);
+    }
+  }
+  if (!outbound) return null;
+  const num = (key: string) =>
+    typeof outbound![key] === "number" ? (outbound![key] as number) : null;
+  const totalEncodeTime = num("totalEncodeTime") ?? 0;
+  const framesEncoded = num("framesEncoded") ?? 0;
+  const deltaFrames = previous ? framesEncoded - previous.framesEncoded : 0;
+  const encodeMsPerFrame =
+    previous && deltaFrames > 0
+      ? Math.round(((1000 * (totalEncodeTime - previous.totalEncodeTime)) / deltaFrames) * 100) /
+        100
+      : null;
+  const codecId = typeof outbound["codecId"] === "string" ? outbound["codecId"] : null;
+  return {
+    stats: {
+      implementation:
+        typeof outbound["encoderImplementation"] === "string"
+          ? outbound["encoderImplementation"]
+          : null,
+      codec: codecId ? (codecs.get(codecId) ?? null) : null,
+      width: num("frameWidth"),
+      height: num("frameHeight"),
+      framesPerSecond: num("framesPerSecond"),
+      encodeMsPerFrame,
+      qualityLimitation:
+        typeof outbound["qualityLimitationReason"] === "string"
+          ? outbound["qualityLimitationReason"]
+          : null,
+    },
+    counters: { totalEncodeTime, framesEncoded },
+  };
+}
+
 export class WebRTCLiveSession {
   private state: WebRTCConnectionState = "idle";
   private lastDetail = "";
@@ -115,6 +207,31 @@ export class WebRTCLiveSession {
    * do not exist here. Candidate-pair RTT is the honest measure of link
    * latency, and frame rate is derived from telemetry arrival instead.
    */
+  private encoderCounters: { totalEncodeTime: number; framesEncoded: number } | null = null;
+
+  /**
+   * The browser encoder's current behaviour, or null before the connection
+   * is up or when the browser exposes no outbound video statistics. Call it
+   * periodically: the per-frame encode time is a mean between two calls.
+   */
+  async readEncoderStats(): Promise<EncoderStats | null> {
+    const pc = this.attempt?.pc;
+    if (!pc || pc.connectionState !== "connected") return null;
+    try {
+      const report = await pc.getStats();
+      const entries: Record<string, unknown>[] = [];
+      report.forEach((entry: RTCStats) =>
+        entries.push(entry as unknown as Record<string, unknown>),
+      );
+      const parsed = parseEncoderStats(entries, this.encoderCounters);
+      if (!parsed) return null;
+      this.encoderCounters = parsed.counters;
+      return parsed.stats;
+    } catch {
+      return null;
+    }
+  }
+
   async readRoundTripTimeMs(): Promise<number | null> {
     const pc = this.attempt?.pc;
     if (!pc || pc.connectionState !== "connected") return null;
@@ -263,7 +380,7 @@ export class WebRTCLiveSession {
       { signal },
     );
 
-    stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+    stream.getTracks().forEach((track) => this.addLocalTrack(pc, track, stream));
 
     pc.addEventListener(
       "connectionstatechange",
@@ -330,6 +447,46 @@ export class WebRTCLiveSession {
       },
       { signal },
     );
+  }
+
+  /**
+   * Adds the camera track with the sender configured for the research
+   * setting rather than for a video call: H.264 first, because that is the
+   * codec every phone encodes in hardware (VP8/VP9 are often software
+   * there); a bit-rate cap high enough that 4K is not silently downscaled;
+   * and resolution held under load, so a frame rate that falls is visible
+   * as such instead of being hidden by a smaller picture. Everything here is
+   * optional API, feature-detected, so an older browser (or the test
+   * environment) falls back to a plain addTrack.
+   */
+  private addLocalTrack(pc: RTCPeerConnection, track: MediaStreamTrack, stream: MediaStream) {
+    if (track.kind !== "video" || typeof pc.addTransceiver !== "function") {
+      pc.addTrack(track, stream);
+      return;
+    }
+    const transceiver = pc.addTransceiver(track, {
+      direction: "sendonly",
+      streams: [stream],
+      sendEncodings: [{ maxBitrate: MAX_VIDEO_BITRATE_BPS }],
+    });
+    try {
+      const capabilities = RTCRtpSender.getCapabilities?.("video");
+      if (capabilities && typeof transceiver.setCodecPreferences === "function") {
+        const h264 = capabilities.codecs.filter((c) => c.mimeType.toLowerCase() === "video/h264");
+        const others = capabilities.codecs.filter((c) => c.mimeType.toLowerCase() !== "video/h264");
+        if (h264.length > 0) transceiver.setCodecPreferences([...h264, ...others]);
+      }
+    } catch {
+      // Codec preference is an optimisation; the backend decodes whatever is negotiated.
+    }
+    try {
+      const params = transceiver.sender.getParameters();
+      params.degradationPreference = "maintain-resolution";
+      if (params.encodings.length > 0) params.encodings[0]!.maxBitrate = MAX_VIDEO_BITRATE_BPS;
+      void transceiver.sender.setParameters(params).catch(() => undefined);
+    } catch {
+      // Same: best effort.
+    }
   }
 
   private deliverTelemetry(raw: string) {

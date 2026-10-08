@@ -35,7 +35,18 @@ class LocalCameraSource implements CameraSource {
       throw error;
     }
     this.stop();
-    this.stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    // Preferences, not requirements: a phone gives its back camera at 4K60,
+    // a laptop webcam gives whatever it has, and neither request can fail
+    // on account of these. The backend measures the rate it actually
+    // receives, so the stream's true frame rate is never assumed.
+    this.stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 3840 },
+        height: { ideal: 2160 },
+        frameRate: { ideal: 60 },
+      },
+    });
     return this.stream;
   }
 

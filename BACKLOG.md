@@ -42,8 +42,11 @@ Last reviewed against the code on 29 September 2026.
   (`PUT`/`DELETE /sessions/{id}/shots/{sequence}/correction`) and a place
   to store them — the backend has no shot-level rows, only per-video
   telemetry streams.
-- **The live backend assumes 30 fps** for the camera stream. Measuring the
-  real frame-arrival rate would make the overlay's timings exact.
+- **The live overlay is not delayed to match the loop latency.** The
+  camera preview is drawn as soon as the frame is captured and the overlay
+  when the telemetry for that frame returns, so the overlay trails the
+  picture by the round trip. Holding the preview back by the measured
+  delay and keying it to the frame id would align them.
 - **CPU tier is built but not deployed.** `follow_through_batch_cpu` runs
   the ONNX exports on ONNX Runtime without CUDA (the Fargate shape), but the
   API only ever invokes the GPU binary and there is no container packaging

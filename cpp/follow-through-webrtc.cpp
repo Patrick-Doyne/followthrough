@@ -606,27 +606,55 @@ class H264Decoder {
 
 public:
 
+    // Hardware first: NVDEC through libavcodec's h264_cuvid decoder. It
+    // decodes a 4K frame in a few milliseconds and, unlike libavcodec's
+    // frame threading, does not pipeline several frames at once -- frame
+    // threading buys throughput by holding (threads - 1) frames back, which
+    // is latency a live overlay cannot afford. The software decoder is only
+    // the fallback for a machine without NVDEC, and there it runs with a
+    // small number of frame threads so 4K still keeps up, at the cost of
+    // that delay.
     H264Decoder() {
 
-        codec_ = avcodec_find_decoder(AV_CODEC_ID_H264);
-
-        if (codec_ == nullptr) {
-
-            std::cerr << "H264 decoder not found (is libavcodec built with H264 support?)" << std::endl;
-            return;
-        }
-
-        context_ = avcodec_alloc_context3(codec_);
-
-        if (avcodec_open2(context_, codec_, nullptr) < 0) {
-
-            std::cerr << "Failed to open H264 decoder context." << std::endl;
-            return;
+        const AVCodec* hw = avcodec_find_decoder_by_name("h264_cuvid");
+        if (hw != nullptr && openWith(hw, 1)) {
+            std::cout << "H264 decoder: NVDEC (h264_cuvid), hardware" << std::endl;
+        } else {
+            const AVCodec* sw = avcodec_find_decoder(AV_CODEC_ID_H264);
+            if (sw == nullptr) {
+                std::cerr << "H264 decoder not found (is libavcodec built with H264 support?)" << std::endl;
+                return;
+            }
+            if (!openWith(sw, SOFTWARE_DECODE_THREADS)) {
+                std::cerr << "Failed to open H264 decoder context." << std::endl;
+                return;
+            }
+            std::cout << "H264 decoder: software (libavcodec h264), " << SOFTWARE_DECODE_THREADS
+                      << " frame threads -- adds up to " << (SOFTWARE_DECODE_THREADS - 1)
+                      << " frames of decode latency; NVDEC was not available" << std::endl;
         }
 
         frame_ = av_frame_alloc();
         packet_ = av_packet_alloc();
         ready_ = true;
+    }
+
+    static constexpr int SOFTWARE_DECODE_THREADS = 4;
+
+    bool openWith(const AVCodec* codec, int threads) {
+
+        AVCodecContext* ctx = avcodec_alloc_context3(codec);
+        if (ctx == nullptr) return false;
+        ctx->thread_count = threads;
+        ctx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+        ctx->pkt_timebase = AVRational{1, 90000};  // RTP's clock; silences the cuvid timebase warning
+        if (avcodec_open2(ctx, codec, nullptr) < 0) {
+            avcodec_free_context(&ctx);
+            return false;
+        }
+        codec_ = codec;
+        context_ = ctx;
+        return true;
     }
 
     ~H264Decoder() {
@@ -699,6 +727,21 @@ private:
 
         int width = frame->width;
         int height = frame->height;
+
+        if (frame->format == AV_PIX_FMT_NV12) {
+            // NVDEC's output: a Y plane and one interleaved UV plane.
+            cv::Mat yuv(height * 3 / 2, width, CV_8UC1);
+            for (int row = 0; row < height; row++) {
+                std::memcpy(yuv.ptr(row), frame->data[0] + static_cast<size_t>(row) * frame->linesize[0], width);
+            }
+            for (int row = 0; row < height / 2; row++) {
+                std::memcpy(yuv.ptr(height + row), frame->data[1] + static_cast<size_t>(row) * frame->linesize[1], width);
+            }
+            cv::Mat bgr;
+            cv::cvtColor(yuv, bgr, cv::COLOR_YUV2BGR_NV12);
+            return bgr;
+        }
+
         int uvWidth = width / 2;
         int uvHeight = height / 2;
 
@@ -988,11 +1031,53 @@ VOID onConnectionStateChange(UINT64 /*customData*/, RTC_PEER_CONNECTION_STATE ne
 // FRAME_QUEUE_SIZE, so a slow inference loop applies backpressure
 // rather than letting decoded frames pile up and drift the pipeline
 // away from real time.
+// Measured stream frame rate: an exponential moving average of the
+// interval between decoded frames, taken where they arrive. main()
+// converts frame counts to seconds with it (shot duration, time to
+// apex, shooter speed, the release window), so the time base follows
+// whatever the camera and the WebRTC track negotiate -- a 60 fps phone
+// or a 30 fps webcam -- instead of an assumed constant.
+std::atomic<double> gDecodeMsTotal{0.0};   // H.264 decode + BGR conversion, summed on the SDK thread
+std::atomic<long> gDecodeFrames{0};
+std::atomic<double> gArrivalIntervalSec{0.0};
+std::atomic<long> gArrivalCount{0};
+static std::chrono::steady_clock::time_point gLastArrival;
+static bool gHaveLastArrival = false;
+const double ARRIVAL_EMA_ALPHA = 0.05;
+const double MAX_PLAUSIBLE_INTERVAL_SEC = 1.0;  // longer gaps are stalls, not pacing
+const long ARRIVAL_WARMUP_FRAMES = 30;
+
+static void resetArrivalRate() {
+    gHaveLastArrival = false;
+    gArrivalCount.store(0);
+    gArrivalIntervalSec.store(0.0);
+}
+
 VOID sampleVideoFrameHandler(UINT64 /*customData*/, PFrame pFrame) {
 
+    auto decode_start = std::chrono::steady_clock::now();
     std::vector<cv::Mat> decoded = gDecoder.decode(pFrame->frameData, pFrame->size);
 
+    auto arrival = std::chrono::steady_clock::now();
+    if (!decoded.empty()) {
+        double ms = std::chrono::duration<double, std::milli>(arrival - decode_start).count();
+        double prev = gDecodeMsTotal.load();
+        while (!gDecodeMsTotal.compare_exchange_weak(prev, prev + ms)) {}
+        gDecodeFrames.fetch_add(static_cast<long>(decoded.size()));
+    }
+
     for (cv::Mat& mat : decoded) {
+
+        if (gHaveLastArrival) {
+            double dt = std::chrono::duration<double>(arrival - gLastArrival).count();
+            if (dt > 0.0 && dt < MAX_PLAUSIBLE_INTERVAL_SEC) {
+                double prev = gArrivalIntervalSec.load();
+                gArrivalIntervalSec.store(prev <= 0.0 ? dt : prev + ARRIVAL_EMA_ALPHA * (dt - prev));
+                gArrivalCount.fetch_add(1);
+            }
+        }
+        gLastArrival = arrival;
+        gHaveLastArrival = true;
 
         gFrameQueue.put(std::move(mat));
     }
@@ -1164,6 +1249,7 @@ bool buildPeerConnection() {
  * channel that is about to be freed.
  */
 void teardownPeerConnection() {
+    resetArrivalRate();
 
     {
         std::lock_guard<std::mutex> lock(gDataChannelMutex);
@@ -1464,14 +1550,14 @@ int main() {
     std::thread readyThread(readyRetryLoop);
     std::thread signalingThread(signalingLoop);
 
-    // fps: no file to query this from anymore -- this is a live
-    // stream. 30.0 is a reasonable, commonly-true default for
-    // webcam capture, but it's a stated assumption, not something
-    // measured from the actual incoming stream. Worth revisiting
-    // with real, observed frame-arrival timing once this is running
-    // end to end -- flagged here rather than silently guessed.
+    // fps: measured from the arrival interval of decoded frames (see
+    // gArrivalIntervalSec), re-read every frame below. 30.0 is only the
+    // placeholder for the first ARRIVAL_WARMUP_FRAMES frames of a
+    // session, before the running average can be trusted.
     double fps = 30.0;
-    std::cout << "Using assumed FPS: " << fps << " (no source file to query -- live stream)" << std::endl;
+    bool fps_measured = false;
+    std::cout << "Stream frame rate: measured from frame arrival (placeholder " << fps
+              << " fps until " << ARRIVAL_WARMUP_FRAMES << " frames have arrived)" << std::endl;
 
     // trail_frozen_at_rim: kept as server-side STATE (its
     // computation is tuned, real logic -- see the comment at its
@@ -1716,6 +1802,18 @@ int main() {
         }
 
         frame_number++;
+
+        // ---- time base: follow the measured stream rate ----
+        {
+            double interval = gArrivalIntervalSec.load();
+            if (gArrivalCount.load() >= ARRIVAL_WARMUP_FRAMES && interval > 0.0) {
+                fps = 1.0 / interval;
+                if (!fps_measured) {
+                    std::cout << "Stream frame rate measured: " << fps << " fps" << std::endl;
+                    fps_measured = true;
+                }
+            }
+        }
 
         // ---- preprocess (shared by detect + court) ----
 
@@ -2117,6 +2215,10 @@ int main() {
             std::chrono::duration<double, std::milli>(t4 - t_before_court).count()
             - court_infer_ms_this_frame;
 
+        // Crop, preprocess and inference inside the pose block are timed on their
+        // own; the pose decode figure below is the remainder of the block.
+        double pose_crop_infer_ms_this_frame = 0.0;
+
         // ---- pose: crop + preprocess + infer + decode -- captures
         // all six tracked keypoints (shoulders, elbows, wrists) into
         // frame-scoped variables for the JSON schema; the wrists are
@@ -2178,6 +2280,8 @@ int main() {
 
                 auto tp2 = std::chrono::steady_clock::now();
                 t_infer_pose += std::chrono::duration<double, std::milli>(tp2 - tp1).count();
+                pose_crop_infer_ms_this_frame =
+                    std::chrono::duration<double, std::milli>(tp2 - tp0).count();
 
                 size_t best_row = 0;
                 float best_conf = -1.0f;
@@ -2232,7 +2336,9 @@ int main() {
         }
 
         auto t_after_pose = std::chrono::steady_clock::now();
-        t_decode_pose += std::chrono::duration<double, std::milli>(t_after_pose - t4).count();
+        t_decode_pose +=
+            std::chrono::duration<double, std::milli>(t_after_pose - t4).count()
+            - pose_crop_infer_ms_this_frame;
 
         // ------------------------------------------------------
         // SHOT START DETECTION (release evaluation) -- unchanged,
@@ -2906,7 +3012,11 @@ int main() {
                 << "  json_build:" << (t_json_build / perf_frame_count)
                 << "  = total:" << (t_total / perf_frame_count)
                 << "ms  (~" << (1000.0 * perf_frame_count / t_total) << " FPS)"
+                << "  stream_fps:" << fps
+                << "  decode(ms/frame, SDK thread):" << (gDecodeFrames.load() > 0 ? gDecodeMsTotal.load() / gDecodeFrames.load() : 0.0)
                 << std::endl;
+            gDecodeMsTotal.store(0.0);
+            gDecodeFrames.store(0);
 
             t_preprocess = t_infer_detect = t_decode_detect = 0;
             t_infer_court = t_decode_court = 0;

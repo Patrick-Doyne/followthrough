@@ -200,7 +200,14 @@ rather than relying on the one the browser creates, because a channel
 received via `onDataChannel` can finish its open handshake before the
 handler is registered; and the frame queue is two deep so a slow inference
 loop applies backpressure instead of drifting away from real time. The
-stream is assumed to be 30 fps.
+stream's frame rate is measured from the arrival interval of the decoded
+frames (an exponential moving average, warmed up over 30 frames, reset on
+every new peer connection) and printed on the `[PERF]` line as
+`stream_fps`. The decoder is NVDEC (`h264_cuvid`, NV12 output) when the
+system libavcodec provides it, with the per-frame decode time on the
+`[PERF]` line; when it does not, the fallback is software decoding on four
+frame threads, which adds three frames of latency and is logged at
+startup.
 
 ## Confirmed working configuration
 

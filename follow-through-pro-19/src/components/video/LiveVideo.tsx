@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { classifyCameraError, createCameraSource, type CameraSource } from "@/services/camera";
 import { useEventCallback } from "@/hooks/use-event-callback";
 import { useLiveHealth } from "@/hooks/use-live-health";
+import { describeEncoderStats } from "@/services/webrtc-live";
 import { useLiveScore, type LiveScore } from "@/hooks/use-live-score";
 import { useScreenWakeLock } from "@/hooks/use-screen-wake-lock";
 import { deriveLiveStatus, type CameraState } from "@/lib/live-status";
@@ -417,8 +418,18 @@ export function LiveVideo({
               />
               {offline ? "Offline" : "Live"}
             </span>
-            <span className="metric-value rounded-sm bg-black/70 px-2 py-1 text-xs text-white">
-              {fmtClock(elapsedSeconds)}
+            <span className="flex flex-col items-end gap-1">
+              <span className="metric-value rounded-sm bg-black/70 px-2 py-1 text-xs text-white">
+                {fmtClock(elapsedSeconds)}
+              </span>
+              {!offline && health.encoder ? (
+                <span
+                  className="metric-value rounded-sm bg-black/70 px-2 py-1 text-[10px] text-white/80"
+                  title="The browser's video encoder: implementation, output size, frame rate and mean encode time per frame"
+                >
+                  {describeEncoderStats(health.encoder)}
+                </span>
+              ) : null}
             </span>
           </div>
           <div className="flex justify-end">{overlay}</div>

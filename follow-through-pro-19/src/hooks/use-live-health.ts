@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import type { WebRTCLiveSession } from "@/services/webrtc-live";
+import type { EncoderStats, WebRTCLiveSession } from "@/services/webrtc-live";
 
 /**
  * Watches a live session for the failure the product could not previously
@@ -48,6 +48,8 @@ export interface LiveHealth {
   fps: number | null;
   /** Round-trip time in ms from the selected candidate pair. Null until known. */
   rttMs: number | null;
+  /** What the browser's encoder is doing with the camera track. Null until known. */
+  encoder: EncoderStats | null;
 }
 
 const INITIAL: LiveHealth = {
@@ -56,7 +58,22 @@ const INITIAL: LiveHealth = {
   hidden: false,
   fps: null,
   rttMs: null,
+  encoder: null,
 };
+
+function sameEncoder(a: EncoderStats | null, b: EncoderStats | null) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.implementation === b.implementation &&
+    a.codec === b.codec &&
+    a.width === b.width &&
+    a.height === b.height &&
+    a.framesPerSecond === b.framesPerSecond &&
+    a.encodeMsPerFrame === b.encodeMsPerFrame &&
+    a.qualityLimitation === b.qualityLimitation
+  );
+}
 
 export function useLiveHealth(
   session: WebRTCLiveSession | null,
@@ -122,6 +139,7 @@ export function useLiveHealth(
           hidden,
           fps: armed ? fps : null,
           rttMs: prev.rttMs,
+          encoder: prev.encoder,
         };
         // Only re-render when something actually changed.
         return prev.telemetryStale === next.telemetryStale &&
@@ -161,9 +179,16 @@ export function useLiveHealth(
     let cancelled = false;
 
     const poll = async () => {
-      const rtt = await session.readRoundTripTimeMs();
+      const [rtt, encoder] = await Promise.all([
+        session.readRoundTripTimeMs(),
+        session.readEncoderStats(),
+      ]);
       if (cancelled) return;
-      setHealth((prev) => (prev.rttMs === rtt ? prev : { ...prev, rttMs: rtt }));
+      setHealth((prev) =>
+        prev.rttMs === rtt && sameEncoder(prev.encoder, encoder)
+          ? prev
+          : { ...prev, rttMs: rtt, encoder },
+      );
     };
 
     void poll();

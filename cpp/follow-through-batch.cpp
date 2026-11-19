@@ -770,6 +770,8 @@ const float MIN_RELEASE_ACCEL = 8.0f;
 
 const int MAX_BALL_COAST_FRAMES = 6;
 
+// Default for --court-every: how often the court keypoints run once the
+// court has been calibrated (positions are held in between).
 const int COURT_CALIBRATION_INTERVAL = 10;
 
 const int APEX_CONFIRMATION_FRAMES = 3;
@@ -783,35 +785,123 @@ const int POSE_CROP_WIDTH = 384;
 const int POSE_CROP_HEIGHT = 480;
 const float POSE_CROP_UPWARD_BIAS_RATIO = 0.15f;
 
+// ============================================================
+// THE PICTURE INSIDE THE FRAME
+// ============================================================
+//
+// A live recording keeps the shape the session started in; a part shot
+// with the phone turned the other way is drawn inside that frame, upright,
+// with pure black at its sides (LiveVideo). Analysing the whole frame
+// would hand the detector a picture a third of the size, and playing the
+// whole frame wastes the screen. So each frame is cropped to its picture
+// first: the black bars are found by scanning for rows and columns that
+// are black edge to edge, which the recorder's own bars are and a scene
+// practically never is. The crop is written into the frame's telemetry
+// (view_rect, with the frame's full size) so the player can show just
+// that rectangle, the same way.
+
+const int BLACK_BAR_MAX_LEVEL = 4;          // a bar's pixels, after H.264
+const double BLACK_BAR_MIN_FRACTION = 0.02; // thinner than this is not a bar
+const int PICTURE_RECT_HOLD_PX = 12;        // edges wandering less than this keep the last crop
+
+cv::Rect picture_rect(const cv::Mat& frame) {
+    cv::Rect full(0, 0, frame.cols, frame.rows);
+    cv::Mat small;
+    cv::resize(frame, small, cv::Size(), 0.25, 0.25, cv::INTER_NEAREST);
+    cv::Mat gray;
+    cv::cvtColor(small, gray, cv::COLOR_BGR2GRAY);
+    cv::Mat row_max, col_max;
+    cv::reduce(gray, row_max, 1, cv::REDUCE_MAX);
+    cv::reduce(gray, col_max, 0, cv::REDUCE_MAX);
+    int top = 0;
+    while (top < row_max.rows && row_max.at<uchar>(top) <= BLACK_BAR_MAX_LEVEL) top++;
+    if (top >= row_max.rows) return full;  // an all-black frame: leave it
+    int bottom = row_max.rows;
+    while (bottom > top && row_max.at<uchar>(bottom - 1) <= BLACK_BAR_MAX_LEVEL) bottom--;
+    int left = 0;
+    while (left < col_max.cols && col_max.at<uchar>(0, left) <= BLACK_BAR_MAX_LEVEL) left++;
+    int right = col_max.cols;
+    while (right > left && col_max.at<uchar>(0, right - 1) <= BLACK_BAR_MAX_LEVEL) right--;
+    // Back to full-frame pixels, even-aligned, and only bars worth the name.
+    int x = left * 4, y = top * 4, w = (right - left) * 4, h = (bottom - top) * 4;
+    if (x < frame.cols * BLACK_BAR_MIN_FRACTION && frame.cols - (x + w) < frame.cols * BLACK_BAR_MIN_FRACTION) { x = 0; w = frame.cols; }
+    if (y < frame.rows * BLACK_BAR_MIN_FRACTION && frame.rows - (y + h) < frame.rows * BLACK_BAR_MIN_FRACTION) { y = 0; h = frame.rows; }
+    x &= ~1; y &= ~1; w &= ~1; h &= ~1;
+    if (w < 64 || h < 64) return full;
+    return cv::Rect(x, y, w, h) & full;
+}
+
 int main(int argc, char** argv) {
 
-    if (argc != 3) {
+    // Options exist for the configuration sweep (research/sweep/): which engines run,
+    // and how often each model runs. Without them the binary behaves as it
+    // always has, which is how the app calls it.
+    std::string detect_model_path = "../../python/runs/detect/train/weights/best" MODEL_EXT;
+    std::string court_model_path = "../../python/runs/pose/train-MuSGD-1/weights/best" MODEL_EXT;
+    std::string pose_model_path = "../../python/yolo26n-pose" MODEL_EXT;
+    int court_every = COURT_CALIBRATION_INTERVAL;  // court keypoints every N frames once calibrated
+    bool pose_every_frame = false;                 // shooter pose on every frame with a player, not only near release
+    int detect_every = 1;                          // detector every K frames; boxes coast in between
+    std::string timing_path;                       // per-frame stage timings as CSV
+
+    std::vector<std::string> positional;
+
+    for (int i = 1; i < argc; i++) {
+
+        std::string arg = argv[i];
+        auto value = [&]() -> std::string {
+            if (i + 1 >= argc) {
+                throw std::runtime_error("missing value for " + arg);
+            }
+            return argv[++i];
+        };
+
+        if (arg == "--detect") detect_model_path = value();
+        else if (arg == "--court") court_model_path = value();
+        else if (arg == "--pose") pose_model_path = value();
+        else if (arg == "--court-every") court_every = std::max(1, std::stoi(value()));
+        else if (arg == "--pose-every-frame") pose_every_frame = true;
+        else if (arg == "--detect-every") detect_every = std::max(1, std::stoi(value()));
+        else if (arg == "--timing") timing_path = value();
+        else if (arg.rfind("--", 0) == 0) {
+            std::cerr << "Unknown option: " << arg << std::endl;
+            return 1;
+        }
+        else positional.push_back(arg);
+    }
+
+    if (positional.size() != 2) {
 
         std::cerr
-            << "Usage: " << argv[0] << " <input video path> <output telemetry JSONL path>"
+            << "Usage: " << argv[0] << " [options] <input video path> <output telemetry JSONL path>\n"
+            << "  --detect PATH --court PATH --pose PATH   engines (default: the app's models)\n"
+            << "  --court-every N        court keypoints every N frames once calibrated (default "
+            << COURT_CALIBRATION_INTERVAL << ")\n"
+            << "  --pose-every-frame     shooter pose on every frame with a player (default: near release)\n"
+            << "  --detect-every K       detector every K frames, boxes coasting in between (default 1)\n"
+            << "  --timing PATH          per-frame stage timings (ms) as CSV"
             << std::endl;
 
         return 1;
     }
 
-    const char* input_video_path = argv[1];
-    const char* output_telemetry_path = argv[2];
+    const char* input_video_path = positional[0].c_str();
+    const char* output_telemetry_path = positional[1].c_str();
 
     StreamHandle stream = make_stream();
 
     // Same three models either way -- .engine files are built from these
     // very .onnx exports -- so detections are equivalent across backends.
-    InferenceEngine detect_engine(
-        "../../python/runs/detect/train/weights/best" MODEL_EXT, stream, 640
-    );
+    InferenceEngine detect_engine(detect_model_path, stream, 640);
 
-    InferenceEngine court_engine(
-        "../../python/runs/pose/train-MuSGD-1/weights/best" MODEL_EXT, stream, 640
-    );
+    InferenceEngine court_engine(court_model_path, stream, 640);
 
-    InferenceEngine pose_engine(
-        "../../python/yolo26n-pose" MODEL_EXT, stream, 480
-    );
+    InferenceEngine pose_engine(pose_model_path, stream, 480);
+
+    std::cout
+        << "Cadence: court every " << court_every << " frames, pose "
+        << (pose_every_frame ? "every frame" : "near release") << ", detector every "
+        << detect_every << " frame(s)" << std::endl;
 
     std::cout << "All three engines ready.\n" << std::endl;
 
@@ -829,6 +919,12 @@ int main(int argc, char** argv) {
     }
 
     double fps = cap.get(cv::CAP_PROP_FPS);
+    // Frames as a player shows them: OpenCV applies a rotation flag if the
+    // file carries one. A live recording carries none -- it is drawn upright
+    // on the phone (LiveVideo) -- and an upload's playback copy is written
+    // upright too (prepare-playback.ts), so the telemetry is always in the
+    // frame the viewer sees.
+    cap.set(cv::CAP_PROP_ORIENTATION_AUTO, 1);
 
     if (fps <= 0) {
 
@@ -909,7 +1005,13 @@ int main(int argc, char** argv) {
 
     cv::Point2f ball_velocity(0.0f, 0.0f);
     std::optional<cv::Point2f> last_real_ball_center;
+    long last_real_ball_frame = 0;
     int ball_coast_frames = 0;
+
+    // --detect-every: what the last detector run selected, held on the
+    // frames it skips. The ball is predicted along its last velocity.
+    std::optional<Detection> held_net, held_player, held_rim;
+    bool ball_seen_at_last_detect = false;
 
     // ------------------------------------------------------
     // RELEASE DETECTION STATE
@@ -1076,9 +1178,24 @@ int main(int argc, char** argv) {
     double t_infer_court = 0, t_decode_court = 0;
     double t_pose_crop_preprocess = 0, t_infer_pose = 0, t_decode_pose = 0;
     double t_state_machine = 0, t_json_build = 0, t_total = 0;
+    double t_court_preprocess = 0;
     int perf_frame_count = 0;
 
     auto last_perf_print = std::chrono::steady_clock::now();
+
+    // --timing: one row per frame. wait_ms is time blocked on the decoder
+    // thread and crop_ms the black-bar scan; pipeline_ms is everything after
+    // that, from frame in hand to telemetry written.
+    std::ofstream timing_log;
+    if (!timing_path.empty()) {
+        timing_log.open(timing_path);
+        timing_log << "frame_id,wait_ms,crop_ms,preprocess_ms,detect_infer_ms,detect_decode_ms,"
+                      "court_preprocess_ms,court_infer_ms,court_decode_ms,pose_crop_ms,pose_infer_ms,"
+                      "pose_decode_ms,state_machine_ms,json_ms,pipeline_ms,ran_detect,ran_court,ran_pose\n";
+    }
+    auto ms_between = [](auto a, auto b) {
+        return std::chrono::duration<double, std::milli>(b - a).count();
+    };
 
     while (true) {
 
@@ -1091,26 +1208,63 @@ int main(int argc, char** argv) {
             break;
         }
 
+        auto t_frame_in_hand = std::chrono::steady_clock::now();
+
+        // Stage accumulators as this frame starts; the --timing row is the
+        // difference at its end.
+        const double a_pre = t_preprocess, a_det = t_infer_detect, a_ddec = t_decode_detect,
+            a_cpre = t_court_preprocess, a_cinf = t_infer_court, a_cdec = t_decode_court,
+            a_pcrop = t_pose_crop_preprocess, a_pinf = t_infer_pose, a_pdec = t_decode_pose,
+            a_sm = t_state_machine, a_json = t_json_build;
+
         frame_number++;
 
-        // ---- preprocess (shared by detect + court) ----
+        // ---- the picture inside the frame (see picture_rect) ----
+        const int source_width = frame.cols;
+        const int source_height = frame.rows;
+        // Held steady: the bars' edges wander a few pixels with the
+        // encoder, and a stage that twitched with them would be worse than
+        // a few pixels of bar. Static is safe because this binary analyses
+        // one video per process.
+        static cv::Rect held_rect;
+        cv::Rect view_rect = picture_rect(frame);
+        if (held_rect.width > 0
+            && std::abs(view_rect.x - held_rect.x) <= PICTURE_RECT_HOLD_PX
+            && std::abs(view_rect.y - held_rect.y) <= PICTURE_RECT_HOLD_PX
+            && std::abs(view_rect.width - held_rect.width) <= PICTURE_RECT_HOLD_PX
+            && std::abs(view_rect.height - held_rect.height) <= PICTURE_RECT_HOLD_PX) {
+            view_rect = held_rect & cv::Rect(0, 0, frame.cols, frame.rows);
+        } else {
+            held_rect = view_rect;
+        }
+        if (view_rect.width != frame.cols || view_rect.height != frame.rows) {
+            frame = frame(view_rect).clone();
+        }
+
+        // ---- preprocess (shared with court when the sizes match) ----
 
         auto t0 = std::chrono::steady_clock::now();
 
+        const bool run_detect = detect_every <= 1 || (frame_number - 1) % detect_every == 0;
+
         int detect_size = detect_engine.input_size();
 
-        LetterboxResult lb_640 = letterbox(frame, detect_size);
+        LetterboxResult lb_640{};
 
-        fill_chw_buffer(lb_640.image, detect_engine.input_buffer(), detect_size);
+        if (run_detect) {
 
-        court_engine.input_buffer() = detect_engine.input_buffer();
+            lb_640 = letterbox(frame, detect_size);
+
+            fill_chw_buffer(lb_640.image, detect_engine.input_buffer(), detect_size);
+        }
 
         auto t1 = std::chrono::steady_clock::now();
         t_preprocess += std::chrono::duration<double, std::milli>(t1 - t0).count();
 
         // ---- detect inference ----
 
-        const auto& detect_output = detect_engine.run();
+        static const std::vector<float> no_detect_output;
+        const std::vector<float>& detect_output = run_detect ? detect_engine.run() : no_detect_output;
 
         auto t2 = std::chrono::steady_clock::now();
         t_infer_detect += std::chrono::duration<double, std::milli>(t2 - t1).count();
@@ -1124,7 +1278,7 @@ int main(int argc, char** argv) {
         std::vector<Detection> player_candidates;
         std::vector<Detection> rim_candidates;
 
-        for (size_t i = 0; i < detect_engine.detection_row_count(); i++) {
+        for (size_t i = 0; run_detect && i < detect_engine.detection_row_count(); i++) {
 
             size_t row = i * detect_engine.row_width();
 
@@ -1173,11 +1327,29 @@ int main(int argc, char** argv) {
         // Hungarian) tracker was tried here and produced worse ball
         // continuity than this, so it was removed.
 
-        std::optional<Detection> basketball = select_best_by_conf(ball_candidates);
+        std::optional<Detection> basketball;
+        std::optional<Detection> net;
+        std::optional<Detection> player;
+        std::optional<Detection> rim;
 
-        std::optional<Detection> net = select_best_by_conf(net_candidates);
-        std::optional<Detection> player = select_player_detection(player_candidates, previous_player_box);
-        std::optional<Detection> rim = select_best_by_conf(rim_candidates);
+        if (run_detect) {
+
+            basketball = select_best_by_conf(ball_candidates);
+            net = select_best_by_conf(net_candidates);
+            player = select_player_detection(player_candidates, previous_player_box);
+            rim = select_best_by_conf(rim_candidates);
+
+            held_net = net;
+            held_player = player;
+            held_rim = rim;
+            ball_seen_at_last_detect = basketball.has_value();
+
+        } else {
+
+            net = held_net;
+            player = held_player;
+            rim = held_rim;
+        }
 
         // ---- ball coasting ----
 
@@ -1186,6 +1358,23 @@ int main(int argc, char** argv) {
         if (basketball.has_value()) {
 
             ball_coast_frames = 0;
+
+        } else if (!run_detect && ball_seen_at_last_detect && last_real_ball_center.has_value()) {
+
+            // A frame the detector skips: the ball moves on along its
+            // velocity from the last frame it was seen.
+            float dt = static_cast<float>(frame_number - last_real_ball_frame);
+
+            Detection predicted;
+            predicted.center = cv::Point2f(
+                last_real_ball_center->x + ball_velocity.x * dt,
+                last_real_ball_center->y + ball_velocity.y * dt
+            );
+            predicted.confidence = 0.0f;
+            predicted.predicted = true;
+
+            basketball = predicted;
+            ball_is_predicted = true;
 
         } else if ((potential_shot || shot_started) &&
                    last_real_ball_center.has_value() &&
@@ -1211,13 +1400,20 @@ int main(int argc, char** argv) {
 
             if (last_real_ball_center.has_value()) {
 
+                // Per frame. With the detector on every frame this is the
+                // displacement since the last detection, as it always was.
+                float dt = detect_every > 1
+                    ? static_cast<float>(std::max(1L, frame_number - last_real_ball_frame))
+                    : 1.0f;
+
                 ball_velocity = cv::Point2f(
-                    basketball->center.x - last_real_ball_center->x,
-                    basketball->center.y - last_real_ball_center->y
+                    (basketball->center.x - last_real_ball_center->x) / dt,
+                    (basketball->center.y - last_real_ball_center->y) / dt
                 );
             }
 
             last_real_ball_center = basketball->center;
+            last_real_ball_frame = frame_number;
         }
 
         if (player.has_value()) {
@@ -1394,7 +1590,7 @@ int main(int argc, char** argv) {
         // ---- court inference: gated to the calibration interval ----
 
         bool run_court_model_this_frame =
-            !ever_calibrated || (frame_number % COURT_CALIBRATION_INTERVAL == 0);
+            !ever_calibrated || (frame_number % court_every == 0);
 
         auto t_before_court = std::chrono::steady_clock::now();
         double court_infer_ms_this_frame = 0.0;
@@ -1406,13 +1602,37 @@ int main(int argc, char** argv) {
         // frame redundantly (see the JSON build section below).
         bool court_calibration_updated_this_frame = false;
 
+        LetterboxResult lb_court{};
+        double court_preprocess_ms_this_frame = 0.0;
+
         if (run_court_model_this_frame) {
+
+            // The court model reuses the detector's letterboxed input when
+            // the two read the same size and the detector ran; otherwise it
+            // letterboxes the frame for itself.
+            int court_size = court_engine.input_size();
+
+            if (run_detect && court_size == detect_size) {
+
+                court_engine.input_buffer() = detect_engine.input_buffer();
+                lb_court = lb_640;
+
+            } else {
+
+                lb_court = letterbox(frame, court_size);
+                fill_chw_buffer(lb_court.image, court_engine.input_buffer(), court_size);
+            }
+
+            auto t_after_court_pre = std::chrono::steady_clock::now();
+            court_preprocess_ms_this_frame = ms_between(t_before_court, t_after_court_pre);
+            t_court_preprocess += court_preprocess_ms_this_frame;
 
             const auto& court_output = court_engine.run();
 
             auto t_after_court_infer = std::chrono::steady_clock::now();
             court_infer_ms_this_frame =
-                std::chrono::duration<double, std::milli>(t_after_court_infer - t_before_court).count();
+                std::chrono::duration<double, std::milli>(t_after_court_infer - t_before_court).count()
+                - court_preprocess_ms_this_frame;
             t_infer_court += court_infer_ms_this_frame;
 
             size_t best_row = 0;
@@ -1445,7 +1665,7 @@ int main(int argc, char** argv) {
 
                     if (kconf >= COURT_KEYPOINT_CONF) {
 
-                        new_points[k] = unletterbox_point(kx, ky, lb_640);
+                        new_points[k] = unletterbox_point(kx, ky, lb_court);
                         new_valid[k] = true;
                         valid_count++;
                     }
@@ -1491,7 +1711,7 @@ int main(int argc, char** argv) {
         auto t4 = std::chrono::steady_clock::now();
         t_decode_court +=
             std::chrono::duration<double, std::milli>(t4 - t_before_court).count()
-            - court_infer_ms_this_frame;
+            - court_infer_ms_this_frame - court_preprocess_ms_this_frame;
 
         // Crop, preprocess and inference inside the pose block are timed on their
         // own; the pose decode figure below is the remainder of the block.
@@ -1506,7 +1726,9 @@ int main(int argc, char** argv) {
         std::vector<cv::Point2f> pose_kpts(17);
         std::vector<bool> pose_valid(17, false);
 
-        if (player_box.has_value() && (ball_near_release_zone || potential_shot)) {
+        bool ran_pose = false;
+
+        if (player_box.has_value() && (pose_every_frame || ball_near_release_zone || potential_shot)) {
 
             int frame_w = frame.cols;
             int frame_h = frame.rows;
@@ -1555,6 +1777,7 @@ int main(int argc, char** argv) {
                     std::chrono::duration<double, std::milli>(tp1 - tp0).count();
 
                 const auto& pose_output = pose_engine.run();
+                ran_pose = true;
 
                 auto tp2 = std::chrono::steady_clock::now();
                 t_infer_pose += std::chrono::duration<double, std::milli>(tp2 - tp1).count();
@@ -2103,6 +2326,11 @@ int main(int argc, char** argv) {
             f["frame_id"] = frame_number;
             f["frame_width"] = frame.cols;
             f["frame_height"] = frame.rows;
+            if (view_rect.width != source_width || view_rect.height != source_height) {
+                f["view_rect"] = {view_rect.x, view_rect.y, view_rect.width, view_rect.height};
+                f["source_width"] = source_width;
+                f["source_height"] = source_height;
+            }
             f["potential_shot"] = potential_shot;
             f["shot_started"] = shot_started;
 
@@ -2271,6 +2499,28 @@ int main(int argc, char** argv) {
         t_total += std::chrono::duration<double, std::milli>(t_after_json - frame_total_start).count();
         perf_frame_count++;
 
+        if (timing_log.is_open()) {
+            timing_log << frame_number
+                << ',' << ms_between(frame_total_start, t_frame_in_hand)
+                << ',' << ms_between(t_frame_in_hand, t0)
+                << ',' << (t_preprocess - a_pre)
+                << ',' << (t_infer_detect - a_det)
+                << ',' << (t_decode_detect - a_ddec)
+                << ',' << (t_court_preprocess - a_cpre)
+                << ',' << (t_infer_court - a_cinf)
+                << ',' << (t_decode_court - a_cdec)
+                << ',' << (t_pose_crop_preprocess - a_pcrop)
+                << ',' << (t_infer_pose - a_pinf)
+                << ',' << (t_decode_pose - a_pdec)
+                << ',' << (t_state_machine - a_sm)
+                << ',' << (t_json_build - a_json)
+                << ',' << ms_between(t0, t_after_json)
+                << ',' << (run_detect ? 1 : 0)
+                << ',' << (run_court_model_this_frame ? 1 : 0)
+                << ',' << (ran_pose ? 1 : 0)
+                << '\n';
+        }
+
         auto now = std::chrono::steady_clock::now();
 
         if (std::chrono::duration<double>(now - last_perf_print).count() >= 1.0) {
@@ -2279,6 +2529,7 @@ int main(int argc, char** argv) {
                 << "[PERF] preprocess:" << (t_preprocess / perf_frame_count)
                 << "  detect_infer:" << (t_infer_detect / perf_frame_count)
                 << "  detect_decode:" << (t_decode_detect / perf_frame_count)
+                << "  court_preprocess:" << (t_court_preprocess / perf_frame_count)
                 << "  court_infer:" << (t_infer_court / perf_frame_count)
                 << "  court_decode:" << (t_decode_court / perf_frame_count)
                 << "  pose_crop:" << (t_pose_crop_preprocess / perf_frame_count)
@@ -2291,7 +2542,7 @@ int main(int argc, char** argv) {
                 << std::endl;
 
             t_preprocess = t_infer_detect = t_decode_detect = 0;
-            t_infer_court = t_decode_court = 0;
+            t_court_preprocess = t_infer_court = t_decode_court = 0;
             t_pose_crop_preprocess = t_infer_pose = t_decode_pose = 0;
             t_state_machine = t_json_build = t_total = 0;
             perf_frame_count = 0;
@@ -2302,6 +2553,10 @@ int main(int argc, char** argv) {
 
     frame_reader.stop();
     frame_reader.join();
+
+    if (timing_log.is_open()) {
+        timing_log.close();
+    }
 
     cap.release();
     // Explicit end-of-stream marker: prepare-playback.ts reads this file

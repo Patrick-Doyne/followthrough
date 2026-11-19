@@ -6,7 +6,7 @@ how to build and run it, the telemetry contract, and how the toolchain was
 set up so it can be replicated on another machine. `../ARCHITECTURE.md`
 describes how the binaries fit into the rest of the system.
 
-Last checked on 29 September 2026.
+Last checked on 18 November 2026.
 
 ## What is here
 
@@ -22,7 +22,7 @@ cpp/
 
 | Target | Source | Inference | Links | Used by |
 | --- | --- | --- | --- | --- |
-| `follow_through_batch_gpu` | `follow-through-batch.cpp` with `-DCV_BACKEND_TENSORRT` | TensorRT `.engine` files | OpenCV, nvinfer, cudart | the Spring Boot API, once per uploaded video (`CppVideoProcessor`) |
+| `follow_through_batch_gpu` | `follow-through-batch.cpp` with `-DCV_BACKEND_TENSORRT` | TensorRT `.engine` files | OpenCV, nvinfer, cudart | the Spring Boot API, once per uploaded video or finished live session (`CppVideoProcessor`), locally and in the deployment container |
 | `follow_through_batch_cpu` | `follow-through-batch.cpp` | ONNX Runtime on the `.onnx` exports | OpenCV, onnxruntime — **no CUDA** | the intended Fargate tier; not yet wired into the API |
 | `follow_through_webrtc` | `follow-through-webrtc.cpp` | TensorRT `.engine` files | OpenCV, nvinfer, cudart, KVS WebRTC C SDK (`kvsWebrtcClient`), libwebsockets, libavcodec/libavutil | the Live page, through the signaling relay in `../js/mock-websocket.js` |
 
@@ -89,11 +89,22 @@ cd cpp/build
 ./follow_through_webrtc
 ```
 
+The offline binary also takes options, used by the configuration sweep
+(`research/sweep/`). Without them it runs the app's models at the app's cadence:
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `--detect PATH`, `--court PATH`, `--pose PATH` | the app's three engines | Load other engines. The court model letterboxes the frame itself when its input size differs from the detector's, or when the detector skipped the frame |
+| `--court-every N` | 10 | Run court keypoints every N frames once calibrated (every frame until the first calibration) |
+| `--pose-every-frame` | off (pose near release) | Run shooter pose on every frame with a player |
+| `--detect-every K` | 1 | Run the detector every K-th frame; between runs the ball coasts at its last velocity and the other boxes are held |
+| `--timing PATH` | none | Write one CSV row per frame: decode wait, crop, each stage's ms, pipeline ms, and which models ran |
+
 Reference clip `burkelake8.MOV` (28 s, 3840×2160, 60 fps, 1,674 frames,
 five shots) on this machine's RTX 3090 and 32 cores, measured 29 September
 2026: the GPU binary finishes in 18.5 s wall (the `[PERF]` line reports
 ≈ 10 ms of pipeline compute per frame, ≈ 100 fps); the CPU binary takes
-66.8 s (≈ 44 ms/frame). Both produce the same five shots with the same
+66.8 s (≈ 40 ms/frame). Both produce the same five shots with the same
 results and designations.
 
 `follow_through_webrtc` prints `All three engines ready.` and then
@@ -117,7 +128,10 @@ lines.
   `apex_point`, `player_distance_ft`, `player_speed_mph`,
   `player_stat_is_projected`, `shot_designation`, `time_to_apex`,
   `shot_duration`, `shot_distance_ft`. Coordinates are in the source frame's
-  own pixels.
+  own pixels. Offline only, on a frame cut out of a letterboxed recording:
+  `view_rect` (`[x, y, width, height]`, the picture's rectangle in the file)
+  with `source_width` and `source_height`; the frame's own size and
+  coordinates are then the picture's.
 - **`shot_event`** — once per decided shot: `frame_id`, `result`
   (`make`/`miss`), running `makes`/`misses`, `shot_designation`,
   `court_x`/`court_y`, `shot_distance`, `shot_duration`, `time_to_apex`.
@@ -195,6 +209,19 @@ connection` → `Ready for a new viewer`, and a second offer answered by the
 same process about 12 s later (the SDK's ICE failure detection, not the
 rebuild).
 
+The offline reader turns on OpenCV's auto-rotation
+(`CAP_PROP_ORIENTATION_AUTO`), so a phone's portrait file is analysed
+upright, and crops a letterboxed frame to its picture before detection
+(`picture_rect`: rows and columns black edge to edge are bars; the crop is
+held against a few pixels of encoder wander).
+
+The live backend's answer declares H.264 level 4.0
+(`profile-level-id=42e028`, set with `transceiverSetFmtp`): a phone's
+encoder plans its frame rate from the level, the SDK's default 3.1 allows
+720p only at 30, and 4.0 allows 720p at 60 (1080p at 60 would need 4.1).
+It serves one viewer at a time: an offer that arrives while a session is
+up is ignored.
+
 Two more live-specific details: the backend creates the DataChannel itself
 rather than relying on the one the browser creates, because a channel
 received via `onDataChannel` can finish its open handshake before the
@@ -203,11 +230,20 @@ loop applies backpressure instead of drifting away from real time. The
 stream's frame rate is measured from the arrival interval of the decoded
 frames (an exponential moving average, warmed up over 30 frames, reset on
 every new peer connection) and printed on the `[PERF]` line as
-`stream_fps`. The decoder is NVDEC (`h264_cuvid`, NV12 output) when the
-system libavcodec provides it, with the per-frame decode time on the
-`[PERF]` line; when it does not, the fallback is software decoding on four
-frame threads, which adds three frames of latency and is logged at
-startup.
+`stream_fps`. The decoder is NVDEC (`h264_cuvid`) when the system
+libavcodec provides it, with the per-frame decode time on the `[PERF]`
+line; when it does not, the fallback is software decoding on four frame
+threads, which adds three frames of latency and is logged at startup. A
+phone steps its resolution up and down as bandwidth allows, and libavcodec's
+cuvid wrapper refuses every picture larger than the first one it decoded
+unless the caller hands it a frame pool from `get_format`, so the backend
+gives every NVDEC context one pool pre-sized to NVDEC's 4096×4096 ceiling
+and copies each decoded frame down from the GPU itself; one decoder then
+follows resolution changes in place. A packet the decoder still refuses
+replaces the decoder at once, and the replacement is given that same packet
+(it is the keyframe carrying the new SPS/PPS, which the phone does not
+repeat); after two such replacements the stream goes to the software
+decoder.
 
 ## Confirmed working configuration
 

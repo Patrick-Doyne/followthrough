@@ -1,4 +1,4 @@
-import { Maximize, Pause, Play, Volume2, VolumeX } from "lucide-react";
+import { Maximize, Minimize, Pause, Play, Volume2, VolumeX } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -18,11 +18,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { useFullscreen } from "@/hooks/use-fullscreen";
 import { fmtClock } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useSettings } from "@/state/settings-provider";
 
 const SPEEDS = ["0.25", "0.5", "1", "1.5", "2"];
+
+/** How long the player goes untouched before its controls fade. Three
+ * seconds is what the common players settle on. */
+const CONTROLS_IDLE_MS = 3000;
 
 /**
  * What a caller can do to the player from outside it.
@@ -50,6 +55,7 @@ export function VideoPlayer({
   onTimeUpdate,
   className,
   handleRef,
+  shape,
 }: {
   src: string;
   poster?: string;
@@ -66,6 +72,13 @@ export function VideoPlayer({
   onTimeUpdate?: (seconds: number) => void;
   className?: string;
   handleRef?: Ref<VideoPlayerHandle>;
+  /**
+   * The shape of the picture, from the analysis that was run on it (see
+   * TelemetryOverlayCanvas.onViewport). The stage takes this shape; until
+   * it is known the stage is 16:9. Not read off the video element: a
+   * browser may report a rotated file's size before or after rotation.
+   */
+  shape?: { width: number; height: number } | null;
 }) {
   const { settings, hydrated } = useSettings();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -79,6 +92,36 @@ export function VideoPlayer({
   const [volume, setVolume] = useState(0.8);
   const [muted, setMuted] = useState(false);
   const [speed, setSpeed] = useState("1");
+  const fullscreen = useFullscreen(containerRef);
+  const shown = shape && shape.width > 0 && shape.height > 0 ? shape : { width: 16, height: 9 };
+  const portraitShown = shown.height > shown.width;
+  // Until the shape is known the picture is hidden, so the stage never
+  // shows it in one shape and then jumps to another.
+  const ready = shape !== null && shape !== undefined;
+  // The stage's width as laid out, re-measured on every resize and turn
+  // of the phone, so its height can follow it (see the stage's style).
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [stageWidth, setStageWidth] = useState(0);
+  useEffect(() => {
+    const node = stageRef.current;
+    if (!node) return;
+    const measure = () => setStageWidth(node.clientWidth);
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(node);
+    window.addEventListener("resize", measure);
+    window.addEventListener("orientationchange", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("orientationchange", measure);
+    };
+  }, [fullscreen.active, shown.width, shown.height]);
+  // With an overlay the picture is drawn on the overlay's canvas (see
+  // TelemetryOverlayCanvas) and the element itself only decodes, unseen.
+  // Transparent rather than display:none, which stops some browsers
+  // decoding it.
+  const composited = Boolean(renderOverlay);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -122,12 +165,84 @@ export function VideoPlayer({
     else video.pause();
   }, []);
 
+  /*
+   * The controls fade out while the video plays and nothing has touched
+   * the player for a few seconds, as every video player does, and come
+   * back on any mouse movement, touch, key or turn of the phone. They
+   * stay while the video is paused and while the pointer rests on them.
+   */
+  const [controlsIdle, setControlsIdle] = useState(false);
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const overControlsRef = useRef(false);
+  const wakeControls = useCallback(() => {
+    setControlsIdle(false);
+    if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+    idleTimerRef.current = setTimeout(() => {
+      const video = videoRef.current;
+      if (video && !video.paused && !overControlsRef.current) setControlsIdle(true);
+    }, CONTROLS_IDLE_MS);
+  }, []);
+  useEffect(() => {
+    if (!playing) {
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      setControlsIdle(false);
+      return;
+    }
+    wakeControls();
+    window.addEventListener("resize", wakeControls);
+    window.addEventListener("orientationchange", wakeControls);
+    return () => {
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      window.removeEventListener("resize", wakeControls);
+      window.removeEventListener("orientationchange", wakeControls);
+    };
+  }, [playing, wakeControls]);
+
   return (
     <div
       ref={containerRef}
-      className={cn("relative overflow-hidden rounded-md border border-border bg-black", className)}
+      onPointerMove={wakeControls}
+      onPointerDown={wakeControls}
+      onTouchStart={wakeControls}
+      onKeyDown={wakeControls}
+      onFocusCapture={wakeControls}
+      className={cn(
+        "relative overflow-hidden rounded-md border border-border bg-black",
+        controlsIdle && "cursor-none",
+        // Full: the surface is the viewport (the Fullscreen API's, or
+        // pinned over the page where a phone has none), the picture
+        // takes all of it and the controls ride over its foot.
+        fullscreen.active && "fixed inset-0 z-50 m-0 flex flex-col rounded-none border-0",
+        className,
+      )}
     >
-      <div className="relative aspect-video w-full">
+      {/* The stage is the shape of the picture, not a fixed 16:9 box: a
+          portrait recording on a phone held upright used to be a thin
+          strip in a wide black box. A portrait stage is held to the
+          viewport's height and centred, so on a wide screen it is a
+          column rather than a tower. */}
+      <div
+        className={cn(
+          "relative mx-auto w-full overflow-hidden",
+          fullscreen.active && "min-h-0 flex-1",
+        )}
+        ref={stageRef}
+        style={
+          fullscreen.active
+            ? undefined
+            : {
+                // Height set from the measured width rather than through
+                // CSS aspect-ratio: Safari on a phone kept the old height
+                // after a rotation changed the width, leaving the picture
+                // small in a stage of the wrong size.
+                height: stageWidth > 0 ? (stageWidth * shown.height) / shown.width : undefined,
+                aspectRatio: stageWidth > 0 ? undefined : `${shown.width} / ${shown.height}`,
+                maxWidth: portraitShown
+                  ? `calc(75vh * ${(shown.width / shown.height).toFixed(4)})`
+                  : undefined,
+              }
+        }
+      >
         <video
           ref={(node) => {
             videoRef.current = node;
@@ -137,7 +252,7 @@ export function VideoPlayer({
           src={src}
           poster={poster}
           playsInline
-          className="size-full object-contain"
+          className={cn("size-full object-contain", (!ready || composited) && "opacity-0")}
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
           onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
@@ -161,7 +276,20 @@ export function VideoPlayer({
         ) : null}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 border-t border-border bg-surface px-3 py-2">
+      <div
+        onPointerEnter={() => {
+          overControlsRef.current = true;
+        }}
+        onPointerLeave={() => {
+          overControlsRef.current = false;
+          wakeControls();
+        }}
+        className={cn(
+          "absolute inset-x-0 bottom-0 flex flex-wrap items-center gap-2 border-t border-white/15 bg-black/70 px-3 py-2 text-white backdrop-blur transition-opacity duration-300 [&_.text-muted-foreground]:text-white/70",
+          controlsIdle && "pointer-events-none opacity-0",
+        )}
+        aria-hidden={controlsIdle}
+      >
         <Button
           size="icon"
           variant="ghost"
@@ -244,10 +372,14 @@ export function VideoPlayer({
         <Button
           size="icon"
           variant="ghost"
-          aria-label="Fullscreen"
-          onClick={() => void containerRef.current?.requestFullscreen?.()}
+          aria-label={fullscreen.active ? "Exit fullscreen" : "Fullscreen"}
+          onClick={fullscreen.toggle}
         >
-          <Maximize className="size-4" aria-hidden />
+          {fullscreen.active ? (
+            <Minimize className="size-4" aria-hidden />
+          ) : (
+            <Maximize className="size-4" aria-hidden />
+          )}
         </Button>
       </div>
     </div>

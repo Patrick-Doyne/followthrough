@@ -498,6 +498,16 @@ video::cue {
   h3 {
     letter-spacing: -0.015em;
   }
+
+  /* iOS Safari zooms the page into any field whose text is under 16px
+     on focus, and then leaves it zoomed. Fields are 14px in the design;
+     on a touch screen they take the floor instead. Zero specificity, so
+     a field that sets its own size still can. */
+  @media (pointer: coarse) {
+    :where(input, select, textarea) {
+      font-size: max(1rem, 1em);
+    }
+  }
 }
 
 @utility panel {

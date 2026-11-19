@@ -13,7 +13,9 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "shots": "node scripts/shoot.mjs",
-    "brand": "npx vite-node scripts/gen-brand-assets.ts"
+    "brand": "npx vite-node scripts/gen-brand-assets.ts",
+    "build:node": "NITRO_PRESET=node-server vite build",
+    "start": "node .output/server/index.mjs"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.15",

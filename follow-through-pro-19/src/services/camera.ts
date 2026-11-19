@@ -9,6 +9,8 @@
  * does no computer vision — capture and transport only.
  */
 
+import { LIVE_CAPTURE } from "@/config/streaming";
+
 export type CameraFailure = "denied" | "unavailable" | "error";
 
 export interface CameraSource {
@@ -35,18 +37,37 @@ class LocalCameraSource implements CameraSource {
       throw error;
     }
     this.stop();
-    // Preferences, not requirements: a phone gives its back camera at 4K60,
-    // a laptop webcam gives whatever it has, and neither request can fail
-    // on account of these. The backend measures the rate it actually
-    // receives, so the stream's true frame rate is never assumed.
+    // Preferences, not requirements: a phone gives its back camera at the
+    // size the pipeline's answer permits (LIVE_CAPTURE says why 720p60), a
+    // laptop webcam gives whatever it has, and neither request can fail on
+    // account of these. The backend measures the rate it actually receives,
+    // so the stream's true frame rate is never assumed.
     this.stream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: "environment" },
-        width: { ideal: 3840 },
-        height: { ideal: 2160 },
-        frameRate: { ideal: 60 },
+        width: { ideal: LIVE_CAPTURE.width },
+        height: { ideal: LIVE_CAPTURE.height },
+        frameRate: { ideal: LIVE_CAPTURE.frameRate },
       },
     });
+    // Safari on a phone opens the camera at 30 whatever the ideal says,
+    // and only moves to 60 when asked again on the open track, with a
+    // floor. Each attempt is allowed to fail: a camera that cannot do it
+    // keeps what it opened with.
+    const track = this.stream.getVideoTracks()[0];
+    if (track && (track.getSettings().frameRate ?? 0) < LIVE_CAPTURE.frameRate - 10) {
+      for (const frameRate of [
+        { ideal: LIVE_CAPTURE.frameRate, min: LIVE_CAPTURE.frameRate - 10 },
+        { exact: LIVE_CAPTURE.frameRate },
+      ]) {
+        try {
+          await track.applyConstraints({ frameRate });
+          if ((track.getSettings().frameRate ?? 0) >= LIVE_CAPTURE.frameRate - 10) break;
+        } catch {
+          // Not supported at this size; the next form, or what it opened with.
+        }
+      }
+    }
     return this.stream;
   }
 

@@ -7,8 +7,10 @@ import com.followthrough.api.dto.video.UploadUrlResponse;
 import com.followthrough.api.dto.video.VideoAssetResponse;
 import com.followthrough.api.dto.video.VideoAssetUpdateRequest;
 import com.followthrough.api.dto.video.VideoTelemetryResponse;
+import com.followthrough.api.service.LiveRecordingPreparer;
 import com.followthrough.api.service.VideoAssetService;
 import jakarta.validation.Valid;
+import java.util.List;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.ResponseEntity;
@@ -20,15 +22,18 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import tools.jackson.databind.JsonNode;
 
 @RestController
 @RequestMapping("/videos")
 public class VideoAssetController {
 
     private final VideoAssetService videoService;
+    private final LiveRecordingPreparer liveRecordingPreparer;
 
-    public VideoAssetController(VideoAssetService videoService) {
+    public VideoAssetController(VideoAssetService videoService, LiveRecordingPreparer liveRecordingPreparer) {
         this.videoService = videoService;
+        this.liveRecordingPreparer = liveRecordingPreparer;
     }
 
     @GetMapping
@@ -56,6 +61,20 @@ public class VideoAssetController {
     @GetMapping("/{videoId}/telemetry")
     public VideoTelemetryResponse telemetry(@PathVariable String videoId) {
         return videoService.getTelemetry(videoId);
+    }
+
+    /** The telemetry a live session collected for the recording it just
+     * ingested (metadata first, then the frame/shot_event stream). Stored
+     * beside the untouched video; playback draws the overlay from it. */
+    @PutMapping("/{videoId}/telemetry")
+    public VideoAssetResponse storeTelemetry(
+            @PathVariable String videoId, @RequestBody List<JsonNode> messages) {
+        VideoAssetResponse stored = videoService.storeTelemetry(videoId, messages);
+        // After the service's transaction has committed, so the preparer
+        // reads the telemetry it just stored; the gallery sees PROCESSING
+        // until the thumbnail is in place.
+        liveRecordingPreparer.prepareAsync(videoId);
+        return stored;
     }
 
     /** Fetch fresh right before playback -- never cache/store the result,

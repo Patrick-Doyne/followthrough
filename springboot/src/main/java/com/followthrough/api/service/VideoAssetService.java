@@ -21,6 +21,7 @@ import java.util.UUID;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.databind.JsonNode;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
@@ -90,6 +91,32 @@ public class VideoAssetService {
                         .orElseThrow(
                                 () -> new ResourceNotFoundException("No telemetry for video " + videoId));
         return new VideoTelemetryResponse(bundle.fps(), bundle.messages());
+    }
+
+    /**
+     * Stores the telemetry a live session collected for the recording it has
+     * just ingested, the way offline processing stores what the detector
+     * wrote: the stream is kept beside the untouched video and the overlay is
+     * drawn from it at playback, in the viewer's theme, never burned into the
+     * recording. The video's and its session's totals are recounted from it,
+     * with the same arithmetic offline processing uses. The gallery thumbnail
+     * follows separately (LiveRecordingPreparer, started by the controller
+     * once this has committed), so the video is left PROCESSING here.
+     */
+    @Transactional
+    public VideoAssetResponse storeTelemetry(String videoId, List<JsonNode> nodes) {
+        VideoAsset video = findVideoOrThrow(videoId);
+        TelemetryJsonlParser.ParsedTelemetry parsed = telemetryParser.parseMessages(nodes);
+        telemetryStore.save(videoId, parsed.fps(), parsed.messages());
+        video.setAnalyzedShots(parsed.result().analyzedShots());
+        video.setShootingPercentage(parsed.result().shootingPercentage());
+        // PROCESSING until LiveRecordingPreparer has run the preparation
+        // script for the gallery thumbnail; it marks the video complete.
+        video.setStatus(ProcessingStatus.PROCESSING);
+        TrainingSession session = video.getSession();
+        recountSession(session);
+        session.setStatus(ProcessingStatus.COMPLETE);
+        return toResponse(video);
     }
 
     public PlaybackUrlResponse getPlaybackUrl(String videoId) {

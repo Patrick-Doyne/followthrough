@@ -61,3 +61,27 @@ export function fromStage(
     y: (point.y - mapping.offsetY) / mapping.scale,
   };
 }
+
+/**
+ * The backing size for a canvas that shows the overlay at `box` CSS pixels:
+ * the box in device pixels, never larger than the authored surface. The
+ * live canvas draws every telemetry message, and drawing a 3840x2160
+ * bitmap for a phone screen a quarter that size cost more than the phone
+ * could give; the renderer's own coordinates stay authored-size through a
+ * scale transform. Null for a box with no size yet.
+ */
+export function backingSize(
+  box: StageBox,
+  devicePixelRatio: number,
+  viewport: OverlayViewport,
+): StageBox | null {
+  if (!(box.width > 0) || !(box.height > 0)) return null;
+  const dpr = devicePixelRatio > 0 ? devicePixelRatio : 1;
+  const width = box.width * dpr;
+  const height = box.height * dpr;
+  const fit = Math.min(1, viewport.width / width, viewport.height / height);
+  return {
+    width: Math.max(1, Math.round(width * fit)),
+    height: Math.max(1, Math.round(height * fit)),
+  };
+}

@@ -15,6 +15,8 @@
 #include <string>
 #include <optional>
 #include <cstring>
+#include <cstdlib>
+#include <cstdio>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -31,6 +33,7 @@
 extern "C" {
 #include <com/amazonaws/kinesis/video/webrtcclient/Include.h>
 #include <libavcodec/avcodec.h>
+#include <libavutil/hwcontext.h>
 }
 
 // NEW DEPENDENCY -- not previously part of this project. Single-
@@ -607,33 +610,15 @@ class H264Decoder {
 public:
 
     // Hardware first: NVDEC through libavcodec's h264_cuvid decoder. It
-    // decodes a 4K frame in a few milliseconds and, unlike libavcodec's
+    // decodes a 1080p frame in a few milliseconds and, unlike libavcodec's
     // frame threading, does not pipeline several frames at once -- frame
     // threading buys throughput by holding (threads - 1) frames back, which
     // is latency a live overlay cannot afford. The software decoder is only
     // the fallback for a machine without NVDEC, and there it runs with a
-    // small number of frame threads so 4K still keeps up, at the cost of
+    // small number of frame threads so 1080p still keeps up, at the cost of
     // that delay.
     H264Decoder() {
-
-        const AVCodec* hw = avcodec_find_decoder_by_name("h264_cuvid");
-        if (hw != nullptr && openWith(hw, 1)) {
-            std::cout << "H264 decoder: NVDEC (h264_cuvid), hardware" << std::endl;
-        } else {
-            const AVCodec* sw = avcodec_find_decoder(AV_CODEC_ID_H264);
-            if (sw == nullptr) {
-                std::cerr << "H264 decoder not found (is libavcodec built with H264 support?)" << std::endl;
-                return;
-            }
-            if (!openWith(sw, SOFTWARE_DECODE_THREADS)) {
-                std::cerr << "Failed to open H264 decoder context." << std::endl;
-                return;
-            }
-            std::cout << "H264 decoder: software (libavcodec h264), " << SOFTWARE_DECODE_THREADS
-                      << " frame threads -- adds up to " << (SOFTWARE_DECODE_THREADS - 1)
-                      << " frames of decode latency; NVDEC was not available" << std::endl;
-        }
-
+        if (!openPreferred()) return;
         frame_ = av_frame_alloc();
         packet_ = av_packet_alloc();
         ready_ = true;
@@ -641,19 +626,167 @@ public:
 
     static constexpr int SOFTWARE_DECODE_THREADS = 4;
 
-    bool openWith(const AVCodec* codec, int threads) {
+    /** Replacement hardware decoders that refused the stream before it is
+     * handed to the software decoder instead. */
+    static constexpr int MAX_HARDWARE_REOPENS = 2;
+
+    /** Refused packets in a row after which replacements (and the log line
+     * each one writes) slow down to one in REPLACEMENT_BACKOFF packets, so a
+     * stream no decoder can read does not cost a reopen per frame. */
+    static constexpr int PROMPT_REPLACEMENTS = 8;
+    static constexpr int REPLACEMENT_BACKOFF = 30;
+
+    /** The NVDEC frame pool is sized for NVDEC's H.264 ceiling in both
+     * dimensions, so one decoder takes any resolution a phone sends, in
+     * either orientation (see framePool). */
+    static constexpr int MAX_DIMENSION = 4096;
+
+    /**
+     * A fresh decoder: NVDEC when it is there, software otherwise. Called at
+     * start, for every new viewer and whenever a packet is refused.
+     */
+    bool openPreferred() {
+        closeContext();
+        const AVCodec* hw = avcodec_find_decoder_by_name("h264_cuvid");
+        if (hw != nullptr && hardwareReopens_ <= MAX_HARDWARE_REOPENS && framePool() != nullptr
+            && openWith(hw, 1, true)) {
+            if (!announcedHardware_) {
+                std::cout << "H264 decoder: NVDEC (h264_cuvid), hardware" << std::endl;
+                announcedHardware_ = true;
+            }
+            hardware_ = true;
+            return true;
+        }
+        const AVCodec* sw = avcodec_find_decoder(AV_CODEC_ID_H264);
+        if (sw == nullptr) {
+            std::cerr << "H264 decoder not found (is libavcodec built with H264 support?)" << std::endl;
+            return false;
+        }
+        if (!openWith(sw, SOFTWARE_DECODE_THREADS, false)) {
+            std::cerr << "Failed to open H264 decoder context." << std::endl;
+            return false;
+        }
+        hardware_ = false;
+        std::cout << "H264 decoder: software (libavcodec h264), " << SOFTWARE_DECODE_THREADS
+                  << " frame threads -- adds up to " << (SOFTWARE_DECODE_THREADS - 1)
+                  << " frames of decode latency; "
+                  << (hw == nullptr ? "NVDEC was not available" : "NVDEC kept rejecting this stream")
+                  << std::endl;
+        return true;
+    }
+
+    void closeContext() {
+        if (context_ != nullptr) avcodec_free_context(&context_);
+    }
+
+    bool openWith(const AVCodec* codec, int threads, bool hardware) {
 
         AVCodecContext* ctx = avcodec_alloc_context3(codec);
         if (ctx == nullptr) return false;
         ctx->thread_count = threads;
         ctx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
         ctx->pkt_timebase = AVRational{1, 90000};  // RTP's clock; silences the cuvid timebase warning
+        if (hardware) {
+            ctx->opaque = this;
+            ctx->get_format = &chooseCudaFrames;
+        }
         if (avcodec_open2(ctx, codec, nullptr) < 0) {
             avcodec_free_context(&ctx);
             return false;
         }
-        codec_ = codec;
         context_ = ctx;
+        return true;
+    }
+
+    /**
+     * The pool of decoded frames every NVDEC context is given, created once.
+     *
+     * Left to itself, libavcodec's cuvid wrapper sizes this pool to the
+     * first picture it decodes and then refuses every larger one with
+     * "AVHWFramesContext is already initialized with incompatible
+     * parameters" -- which is what killed the phone's session a few frames
+     * in, when it stepped its resolution up, and before that a second
+     * viewer who connected at another size. The wrapper accepts a pool at
+     * least as large as the picture, so this one is pre-sized to NVDEC's
+     * H.264 ceiling in both dimensions and one context then follows every
+     * resolution change in place (the wrapper re-creates its decoder, the
+     * pool stays). The pool can only be handed over from the get_format
+     * callback (chooseCudaFrames): libavcodec drops whatever hw_frames_ctx
+     * the caller set before every format negotiation, including the one at
+     * open, and the wrapper then quietly allocates its own stream-sized
+     * pool, which is how the first attempt at this fix changed nothing.
+     * Taking the pool means taking the decoder's frames on the GPU, so
+     * decode() copies each one down itself (transferFromGpu), the same
+     * device-to-host copy the wrapper used to make, plus one on-device
+     * copy per frame that costs microseconds. No surface is allocated up
+     * front. The pool also owns the CUDA context, which used to be
+     * created anew with every decoder.
+     */
+    AVBufferRef* framePool() {
+        if (framePool_ != nullptr || framePoolFailed_) return framePool_;
+        AVBufferRef* device = nullptr;
+        int err = av_hwdevice_ctx_create(&device, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 0);
+        if (err < 0) {
+            std::cerr << "NVDEC: no CUDA device context (" << err << "); using the software decoder" << std::endl;
+            framePoolFailed_ = true;
+            return nullptr;
+        }
+        AVBufferRef* frames = av_hwframe_ctx_alloc(device);
+        if (frames != nullptr) {
+            auto* pool = reinterpret_cast<AVHWFramesContext*>(frames->data);
+            pool->format = AV_PIX_FMT_CUDA;
+            pool->sw_format = AV_PIX_FMT_NV12;  // what cuvid decodes 8-bit 4:2:0 H.264 to
+            pool->width = MAX_DIMENSION;
+            pool->height = MAX_DIMENSION;
+            pool->initial_pool_size = 0;
+            err = av_hwframe_ctx_init(frames);
+            if (err < 0) av_buffer_unref(&frames);
+        }
+        av_buffer_unref(&device);
+        if (frames == nullptr) {
+            std::cerr << "NVDEC: frame pool failed (" << err << "); using the software decoder" << std::endl;
+            framePoolFailed_ = true;
+            return nullptr;
+        }
+        framePool_ = frames;
+        return framePool_;
+    }
+
+    /** libavcodec's format negotiation for an NVDEC context, run at open
+     * and at every new SPS: takes the decoder's frames on the GPU, from the
+     * pre-sized pool, whenever that is offered. */
+    static enum AVPixelFormat chooseCudaFrames(AVCodecContext* avctx, const enum AVPixelFormat* formats) {
+        auto* self = static_cast<H264Decoder*>(avctx->opaque);
+        for (const enum AVPixelFormat* f = formats; *f != AV_PIX_FMT_NONE; f++) {
+            if (*f != AV_PIX_FMT_CUDA || self == nullptr || self->framePool_ == nullptr) continue;
+            av_buffer_unref(&avctx->hw_frames_ctx);
+            avctx->hw_frames_ctx = av_buffer_ref(self->framePool_);
+            if (avctx->hw_frames_ctx != nullptr) return AV_PIX_FMT_CUDA;
+        }
+        return formats[0];
+    }
+
+    /** Copies the GPU frame in frame_ into swFrame_ (NV12 in system
+     * memory, reallocated only when the picture size changes). */
+    bool transferFromGpu() {
+        if (swFrame_ == nullptr) swFrame_ = av_frame_alloc();
+        if (swFrame_ == nullptr) return false;
+        if (swFrame_->buf[0] == nullptr || swFrame_->width != frame_->width || swFrame_->height != frame_->height) {
+            av_frame_unref(swFrame_);
+            swFrame_->format = AV_PIX_FMT_NV12;
+            swFrame_->width = frame_->width;
+            swFrame_->height = frame_->height;
+            int err = av_frame_get_buffer(swFrame_, 0);
+            if (err < 0) {
+                std::cerr << "NVDEC: no system-memory frame (" << err << ")" << std::endl;
+                return false;
+            }
+        }
+        int err = av_hwframe_transfer_data(swFrame_, frame_, 0);
+        if (err < 0) {
+            std::cerr << "NVDEC: frame transfer to system memory failed (" << err << ")" << std::endl;
+            return false;
+        }
         return true;
     }
 
@@ -661,18 +794,19 @@ public:
 
         if (packet_ != nullptr) av_packet_free(&packet_);
         if (frame_ != nullptr) av_frame_free(&frame_);
+        if (swFrame_ != nullptr) av_frame_free(&swFrame_);
         if (context_ != nullptr) avcodec_free_context(&context_);
+        if (framePool_ != nullptr) av_buffer_unref(&framePool_);
     }
 
-    /** Drops any state carried over from a previous stream. A reconnect
-     * brings a new SPS/PPS and a new IDR; without this the decoder tries to
-     * continue the old sequence and emits nothing. */
+    /** A new viewer gets a new decoder: a clean parser with nothing of the
+     * previous stream in it. The hardware decoder is tried again for every
+     * viewer even if the previous stream ended up on the software one. */
     void reset() {
-
-        if (context_ != nullptr) {
-
-            avcodec_flush_buffers(context_);
-        }
+        if (!ready_) return;
+        consecutiveErrors_ = 0;
+        hardwareReopens_ = 0;
+        if (!openPreferred()) ready_ = false;
     }
 
     bool isReady() const {
@@ -693,11 +827,30 @@ public:
         packet_->size = static_cast<int>(size);
 
         int sendResult = avcodec_send_packet(context_, packet_);
-
         if (sendResult < 0) {
-
-            std::cerr << "avcodec_send_packet failed: " << sendResult << std::endl;
-            return results;
+            // A refused packet means this context is done for (with the
+            // pool pre-sized, what is left is a stream the decoder cannot
+            // take at all), so it is replaced at once and handed this same
+            // packet. Waiting for a few more refusals would lose the packet
+            // that failed first, which is nearly always the keyframe that
+            // carries the stream's new SPS/PPS, and the sender does not
+            // repeat it unprompted: the replacement would then sit on
+            // undecodable P-frames until the next keyframe, if one came.
+            consecutiveErrors_++;
+            bool replaceNow = consecutiveErrors_ <= PROMPT_REPLACEMENTS
+                              || consecutiveErrors_ % REPLACEMENT_BACKOFF == 0;
+            if (!replaceNow) return results;
+            if (hardware_) hardwareReopens_++;
+            std::cerr << "avcodec_send_packet failed: " << sendResult
+                      << (hardware_ ? " (NVDEC)" : " (software)")
+                      << " -- replacing the H264 decoder (refused packets in a row: "
+                      << consecutiveErrors_ << ")" << std::endl;
+            if (!openPreferred()) {
+                ready_ = false;
+                return results;
+            }
+            sendResult = avcodec_send_packet(context_, packet_);
+            if (sendResult < 0) return results;
         }
 
         while (true) {
@@ -714,7 +867,17 @@ public:
                 break;
             }
 
-            results.push_back(convertToBgr(frame_));
+            consecutiveErrors_ = 0;
+            hardwareReopens_ = 0;
+            AVFrame* decoded = frame_;
+            if (frame_->format == AV_PIX_FMT_CUDA) {
+                if (!transferFromGpu()) {
+                    av_frame_unref(frame_);
+                    break;
+                }
+                decoded = swFrame_;
+            }
+            results.push_back(convertToBgr(decoded));
             av_frame_unref(frame_);
         }
 
@@ -723,6 +886,13 @@ public:
 
 private:
 
+    bool hardware_ = false;
+    bool announcedHardware_ = false;
+    int consecutiveErrors_ = 0;
+    int hardwareReopens_ = 0;
+    AVBufferRef* framePool_ = nullptr;
+    bool framePoolFailed_ = false;
+    AVFrame* swFrame_ = nullptr;  // the GPU frame brought down, NV12
     cv::Mat convertToBgr(AVFrame* frame) {
 
         int width = frame->width;
@@ -776,7 +946,6 @@ private:
         return bgr;
     }
 
-    const AVCodec* codec_ = nullptr;
     AVCodecContext* context_ = nullptr;
     AVFrame* frame_ = nullptr;
     AVPacket* packet_ = nullptr;
@@ -1149,6 +1318,29 @@ bool buildPeerConnection() {
     RtcConfiguration configuration;
     std::memset(&configuration, 0, sizeof(configuration));
 
+    // ICE servers. Without a STUN server the peer connection only offers this
+    // machine's own addresses, which is enough on one LAN and useless from a
+    // phone on the internet to an instance behind NAT. FT_STUN_URL overrides
+    // the default; FT_TURN_URL with FT_TURN_USERNAME / FT_TURN_CREDENTIAL adds
+    // a relay for networks where STUN alone cannot get through.
+    int iceCount = 0;
+    const char* stunUrl = std::getenv("FT_STUN_URL");
+    if (stunUrl == nullptr || *stunUrl == '\0') stunUrl = "stun:stun.l.google.com:19302";
+    std::snprintf(configuration.iceServers[iceCount].urls, MAX_ICE_CONFIG_URI_LEN + 1, "%s", stunUrl);
+    iceCount++;
+    const char* turnUrl = std::getenv("FT_TURN_URL");
+    if (turnUrl != nullptr && *turnUrl != '\0') {
+        RtcIceServer& turn = configuration.iceServers[iceCount++];
+        std::snprintf(turn.urls, MAX_ICE_CONFIG_URI_LEN + 1, "%s", turnUrl);
+        const char* turnUser = std::getenv("FT_TURN_USERNAME");
+        const char* turnCred = std::getenv("FT_TURN_CREDENTIAL");
+        if (turnUser != nullptr) std::snprintf(turn.username, MAX_ICE_CONFIG_USER_NAME_BUFFER_LEN, "%s", turnUser);
+        if (turnCred != nullptr) std::snprintf(turn.credential, MAX_ICE_CONFIG_CREDENTIAL_BUFFER_LEN, "%s", turnCred);
+    }
+    std::cout << "[KVS] ICE servers: " << stunUrl
+              << (turnUrl != nullptr && *turnUrl != '\0' ? std::string(" + ") + turnUrl : std::string(""))
+              << std::endl;
+
     kvsStatus = createPeerConnection(&configuration, &gPeerConnection);
     if (STATUS_FAILED(kvsStatus)) {
         std::cerr << "createPeerConnection failed: 0x" << std::hex << kvsStatus << std::dec << std::endl;
@@ -1194,6 +1386,22 @@ bool buildPeerConnection() {
     if (STATUS_FAILED(kvsStatus)) {
         std::cerr << "addTransceiver failed: 0x" << std::hex << kvsStatus << std::dec << std::endl;
         return false;
+    }
+
+    // The H.264 level the answer declares is the ceiling a phone's hardware
+    // encoder plans to: Safari sets its frame rate to the level's sample
+    // rate divided by the frame area. The SDK's default is level 3.1
+    // (42e01f), 27.6 M samples a second: 1280x720 at 30 and no more. Level
+    // 4.0 (42e028) allows 62.9 M, which is 1280x720 at 60 or 1920x1080 at
+    // 30, both of which the decoder handles (NVDEC) and this loop keeps up
+    // with. Same constrained-baseline profile, so every phone still encodes
+    // it in hardware; level-asymmetry-allowed because the browser may
+    // encode below the level it is allowed.
+    kvsStatus = transceiverSetFmtp(gVideoTransceiver,
+        (PCHAR) "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e028");
+    if (STATUS_FAILED(kvsStatus)) {
+        std::cerr << "transceiverSetFmtp failed: 0x" << std::hex << kvsStatus << std::dec
+                  << " (the answer keeps the SDK's level 3.1, 720p at 30 fps)" << std::endl;
     }
 
     kvsStatus = transceiverOnFrame(gVideoTransceiver, 0, sampleVideoFrameHandler);
@@ -1504,11 +1712,23 @@ int main() {
         return 1;
     }
 
+    // The signaling relay is on this machine by default; FT_RELAY_HOST and
+    // FT_RELAY_PORT point the backend at a relay elsewhere.
+    static std::string relayHost = [] {
+        const char* v = std::getenv("FT_RELAY_HOST");
+        return std::string(v != nullptr && *v != '\0' ? v : "localhost");
+    }();
+    static int relayPort = [] {
+        const char* v = std::getenv("FT_RELAY_PORT");
+        return v != nullptr && *v != '\0' ? std::atoi(v) : 8080;
+    }();
+    std::cout << "[WS] Connecting to relay ws://" << relayHost << ":" << relayPort << std::endl;
+
     struct lws_client_connect_info connectInfo;
     std::memset(&connectInfo, 0, sizeof(connectInfo));
     connectInfo.context = gWsContext;
-    connectInfo.address = "localhost";
-    connectInfo.port = 8080;
+    connectInfo.address = relayHost.c_str();
+    connectInfo.port = relayPort;
     connectInfo.path = "/";
     connectInfo.host = connectInfo.address;
     connectInfo.origin = connectInfo.address;

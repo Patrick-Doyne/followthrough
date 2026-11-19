@@ -140,4 +140,7 @@ export type SignalingMessage =
   | { type: "ready" }
   | { type: "offer"; sdp: string }
   | { type: "answer"; sdp: string }
-  | { type: "ice-candidate"; candidate: RTCIceCandidateInit };
+  | { type: "ice-candidate"; candidate: RTCIceCandidateInit }
+  /** A line of phone-side diagnostics for the relay's log (src/lib/live-diagnostics.ts);
+   * the relay prints it and does not forward it. */
+  | { type: "diagnostic"; detail: string };

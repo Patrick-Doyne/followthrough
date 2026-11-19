@@ -1,0 +1,27 @@
+# What the image build does not need from the checkout (deploy/docker/Dockerfile).
+.git
+**/node_modules
+**/.output
+**/.wrangler
+**/dist
+cpp/build
+cpp/third_party
+springboot/target
+springboot/local-data
+springboot/local-video-storage
+python/videos
+python/runs/**/*.engine
+python/runs/**/*.pt
+python/data-sets
+python/frames
+python/images
+python/yolo-weights
+python/*.engine
+python/*.pt
+python/*.MOV
+docs/images
+# The research study (research/README.md) is not part of the app image.
+research
+**/.terraform
+*.pptx
+*.pdf

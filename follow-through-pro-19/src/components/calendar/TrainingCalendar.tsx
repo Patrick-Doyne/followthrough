@@ -317,8 +317,12 @@ function MonthGrid({
   const todayIso = iso(new Date());
 
   return (
-    <div className="overflow-x-auto">
-      <div className="min-w-[640px]">
+    <div>
+      {/* Seven columns at any width. The grid used to sit on a 640px
+          floor and scroll sideways, which on a phone showed Sunday to
+          Wednesday and hid the rest; now a cell is narrower there and
+          its sessions are dots rather than titles (see below). */}
+      <div>
         {/* The weekday strip sits on its own ground so the grid reads
             as a table with a head, not as seven columns of the same
             thing. */}
@@ -327,11 +331,12 @@ function MonthGrid({
             <div
               key={d}
               className={cn(
-                "label-caps px-2 py-2 text-center",
+                "label-caps px-1 py-2 text-center sm:px-2",
                 isWeekendColumn(i) && "text-muted-foreground/60",
               )}
             >
-              {d}
+              <span className="sm:hidden">{d.slice(0, 1)}</span>
+              <span className="hidden sm:inline">{d}</span>
             </div>
           ))}
         </div>
@@ -348,7 +353,7 @@ function MonthGrid({
               <div
                 key={key}
                 className={cn(
-                  "group/day relative min-h-[104px] border-r border-b border-border/60 p-1.5",
+                  "group/day relative min-h-[3.25rem] border-r border-b border-border/60 p-1 sm:min-h-[104px] sm:p-1.5",
                   // The seventh cell of every row is against the card
                   // edge, where a border doubles up with the card's own.
                   "[&:nth-child(7n)]:border-r-0",
@@ -394,7 +399,26 @@ function MonthGrid({
                   <AddOnDay dateIso={key} onCreateOn={onCreateOn} />
                 </div>
 
-                <div className="space-y-1">
+                {/* A phone cell is about 50px wide: no title fits, so
+                    each session is a dot in its status colour and the
+                    day opens on a tap. Wider, the chips as before. */}
+                {dayEvents.length > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => onOpenDay(key)}
+                    aria-label={`${dayEvents.length} sessions on ${key}`}
+                    className="flex flex-wrap gap-1 px-0.5 py-1 sm:hidden"
+                  >
+                    {dayEvents.slice(0, 4).map((event) => (
+                      <span
+                        key={event.eventId}
+                        className={cn("size-1.5 rounded-full", STATUS_BAR[event.status])}
+                        aria-hidden
+                      />
+                    ))}
+                  </button>
+                ) : null}
+                <div className="hidden space-y-1 sm:block">
                   {dayEvents.slice(0, 3).map((event) => (
                     <EventChip key={event.eventId} event={event} onSelect={onSelectEvent} />
                   ))}

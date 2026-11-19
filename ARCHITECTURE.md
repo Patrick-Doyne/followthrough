@@ -5,7 +5,7 @@ and open work lives in `BACKLOG.md`; how to run the stack lives in
 `LOCAL_DEV.md`; the C++ toolchain lives in `cpp/README.md`. Where something
 is a local stand-in for future AWS infrastructure, it says so.
 
-Last checked against the code on 29 September 2026.
+Last checked against the code on 18 November 2026.
 
 ---
 
@@ -79,7 +79,7 @@ lines.
 | Message | Fields |
 |---|---|
 | `metadata` (offline only, first line) | `fps`, `frame_width`, `frame_height` |
-| `frame` | `frame_id`, `frame_width`, `frame_height`, `potential_shot`, `shot_started`, `trail_frozen_at_rim`, `ball` (box + centre, `predicted`), `player`, `rim`, `net`, `court_keypoints` (only when calibration changed), `pose`, `apex_point`, `player_distance_ft`, `player_speed_mph`, `player_stat_is_projected`, `shot_designation`, `time_to_apex`, `shot_duration`, `shot_distance_ft` |
+| `frame` | `frame_id`, `frame_width`, `frame_height`, `view_rect` + `source_width` + `source_height` (offline only, on a frame cropped out of a letterboxed recording: the picture's rectangle in the file), `potential_shot`, `shot_started`, `trail_frozen_at_rim`, `ball` (box + centre, `predicted`), `player`, `rim`, `net`, `court_keypoints` (only when calibration changed), `pose`, `apex_point`, `player_distance_ft`, `player_speed_mph`, `player_stat_is_projected`, `shot_designation`, `time_to_apex`, `shot_duration`, `shot_distance_ft` |
 | `shot_event` | `frame_id`, `result` (`make`/`miss`), running `makes`/`misses`, `shot_designation`, `court_x`/`court_y` (feet, rim-centred; `null` when the court was not calibrated or the shooter not detected at release), `shot_distance`, `shot_duration`, `time_to_apex` |
 | `eos` (offline only, last line) | — |
 
@@ -105,7 +105,7 @@ js/mock-websocket.js  <──ready/offer/answer/ice──>  follow_through_webrt
                                                           applyFrame / applyShotEvent   ▼
                                                           renderFromPersistent(canvas)  (video + overlay in ONE canvas)
                                                                                         │
-                                              canvas.captureStream() → MediaRecorder → upload → POST /sessions/{id}/videos
+        camera drawn upright into a canvas → MediaRecorder → PUT upload → POST /sessions/{id}/videos/process (Pipeline B)
 ```
 
 - `services/webrtc-live.ts` (`WebRTCLiveSession`) owns the
@@ -129,13 +129,33 @@ js/mock-websocket.js  <──ready/offer/answer/ice──>  follow_through_webrt
   backpressure instead of drifting away from real time. The backend
   measures the stream's frame rate from the arrival interval of the
   decoded frames, so timings follow the real camera rate.
-- The browser asks for the back-facing camera at 4K60 as a preference,
-  puts H.264 first in the codec preference (the codec phones encode in
-  hardware), caps the upload at 40 Mbit/s so 4K is not downscaled on a
-  LAN, and reads the sender's encoder statistics (implementation, output
-  size, rate, encode time per frame) into `hooks/use-live-health.ts`,
-  which the Live page shows under the clock. The backend decodes with
-  NVDEC when libavcodec has it.
+- The browser asks for the back-facing camera at 1280×720 at 60 fps
+  (`config/streaming.ts` `LIVE_CAPTURE`; `services/camera.ts` asks the
+  open track again, because Safari opens the camera at 30) and puts H.264
+  first in the codec preference (the codec phones encode in hardware).
+  The backend's answer declares H.264 level 4.0 (`transceiverSetFmtp`,
+  `42e028`): a phone's encoder plans its frame rate from the level, and
+  the SDK's default 3.1 held 720p to 30. The backend decodes with NVDEC
+  when libavcodec has it, and one decoder follows the phone's resolution
+  changes in place.
+- **Sending rate.** The cap scales with the captured area from 40 Mbit/s
+  at 4K (`bitrateEnvelope`); the sender starts at 2 Mbit/s and floors at
+  1 Mbit/s. The KVS SDK sends no bandwidth feedback, so the browser's own
+  estimate only falls; `services/webrtc-live.ts` therefore runs its own
+  delay control every 2 s (`nextSendCapKbps`), cutting the cap when the
+  round trip rises more than 200 ms above the lowest seen on the link and
+  climbing back after three clean checks. `degradationPreference` is
+  `maintain-framerate`, so a cut shrinks the picture and keeps the frames.
+  The sender's encoder statistics (implementation, output size, rate,
+  encode time per frame) feed `hooks/use-live-health.ts`, which the Live
+  page shows under the clock.
+- **The live canvas** (`components/video/FollowThroughOverlay.tsx`) has a
+  backing store the size it is displayed at (`lib/overlay-stage.ts`
+  `backingSize`), is painted every animation frame from the camera element
+  with the latest telemetry on top, and takes the camera frame's shape
+  (`viewportForFrame`), so a phone held upright gets a portrait stage.
+- The backend serves **one viewer at a time**: an offer that arrives while
+  a session is up is ignored, so a second phone fails the first.
 - On the page, **every number comes from the DataChannel**: the score bug
   and counters (`hooks/use-live-score.ts`), the shot feed
   (`components/video/ShotFeed.tsx`), the running-percentage chart and the
@@ -143,15 +163,38 @@ js/mock-websocket.js  <──ready/offer/answer/ice──>  follow_through_webrt
   `lib/live-status.ts` derive the badge from whether telemetry and the
   camera clock are both moving, so it can only say *Live* when they are.
   `hooks/use-screen-wake-lock.ts` keeps a propped phone from locking.
-- **Recording** is the live canvas (`captureStream` + `MediaRecorder`), so
-  the saved file carries the overlay as it was drawn during the session.
-  When the session ends the browser asks for an upload URL
-  (`POST /videos/upload-url`), `PUT`s the blob, then ingests it with the
-  pipeline's own totals (`POST /sessions/{id}/videos`, `VideoIngestRequest`)
-  so nothing is re-processed.
-- Live sessions currently attach to a fixed seeded session
-  (`LIVE_SESSION_ID = "session-001"` in `routes/live.tsx`); creating a
-  session per live run is an open item in `BACKLOG.md`.
+- **Recording** (`components/video/LiveVideo.tsx`) is the picture as the
+  phone shows it, drawn upright frame by frame into a canvas of the shape
+  the session started in, and recorded from `canvas.captureStream` at the
+  camera's rate (4 Mbit/s at 60 fps, 2.5 at 30). A phone's own recorder
+  writes the sensor's frames with a rotation flag that Chromium applies
+  and Safari does not; a canvas holds upright pixels and no flag, so the
+  file plays the same everywhere. A part shot after turning the phone is
+  drawn inside the starting shape with black bars, so **a session should
+  start with the phone upright**. Nothing is burned in, and nothing from
+  the live telemetry is kept: it is a preview. The recorder is asked for
+  H.264 (MP4 first) before VP8 or VP9 (`lib/live-recording.ts`): it runs
+  beside the WebRTC encode of the same camera, and on a phone H.264 is the
+  codec with a hardware encoder.
+- **Phone-side diagnostics** (`lib/live-diagnostics.ts`): the live page
+  reports its connection states, the ICE candidates on both sides, the
+  path the media takes with its round-trip time and the sender's bandwidth
+  estimate, the encoder's output every five seconds and any page error to
+  the signaling relay as `diagnostic` messages. The relay prints them and
+  forwards nothing, so a session that went wrong on a phone, which has no
+  console, can be read from the relay's log next to the backend's.
+- Starting a live session creates its own `TrainingSession`
+  (`routes/live.tsx`, unless it is a practice run). When it ends the
+  browser asks for an upload URL (`POST /videos/upload-url`), `PUT`s the
+  blob with `XMLHttpRequest` so a toast can show its progress (the screen
+  is kept awake until it finishes), and queues it with
+  `POST /sessions/{id}/videos/process`: **the saved session is analysed
+  by Pipeline B**, the same as an upload, so its telemetry, totals and
+  thumbnail are the offline ones, at the recording's full picture rather
+  than the smaller one the uplink carried. Shot corrections made during
+  the session are not carried over. `POST /sessions/{id}/videos`,
+  `PUT /videos/{id}/telemetry` and `LiveRecordingPreparer`, which stored
+  the live telemetry instead, remain in the API but no page calls them.
 
 ### What is real vs. stand-in
 
@@ -179,9 +222,9 @@ browser: pick a file ─> POST /videos/upload-url ─> PUT bytes to uploadUrl
             flushes every 30 frames                 until the first shot apex, then:
             ends with {"type":"eos"}                  ├─ ffmpeg seek + 1 frame = gallery thumbnail
                                                       │    (footage only — no overlay on it)
-                                                      └─ IF the codec is one no browser decodes
-                                                         (HEVC from a phone): an H.264 copy,
-                                                         written BESIDE the upload
+                                                      └─ IF the codec is one no browser decodes,
+                                                         or the file carries a rotation flag:
+                                                         an upright H.264 copy, written BESIDE the upload
 
                         The uploaded recording is NEVER modified.
 ```
@@ -204,7 +247,15 @@ immediately rather than left waiting on a file nobody will finish.
 (the default: invents plausible numbers, produces no telemetry, thumbnail or
 playback copy, and is what every test runs against) or `CppVideoProcessor`.
 The API always invokes the GPU binary
-(`followthrough.cpp.binary-path=../cpp/build/follow_through_batch_gpu`).
+(`followthrough.cpp.binary-path=../cpp/build/follow_through_batch_gpu`);
+the deployment container runs it the same way (`deploy/docker/start-api.sh`).
+
+The binary reads frames with OpenCV's auto-rotation on, so a phone's
+portrait file is analysed upright. A live recording's part shot after
+turning the phone sits inside the starting shape with black bars; each
+frame is cropped to its picture first (`picture_rect`, held against a few
+pixels of encoder wander), so the detector sees that part at full size,
+and the crop is written into the frame as `view_rect` for the player.
 
 ### The telemetry file is a streaming contract
 
@@ -232,9 +283,14 @@ element reports `videoWidth === 0`, which draws as a black rectangle with a
 correct overlay floating on it. So `prepare-playback.ts` transcodes
 **deliberately and conditionally**:
 
-- `needsPlaybackRendition` (`src/lib/playback-format.ts`) allow-lists the
-  codecs known to play; an unrecognised codec costs one unnecessary
-  transcode, whereas guessing the other way ships a black player.
+- `needsPlaybackCopy` (`src/lib/playback-format.ts`) asks for a copy when
+  the codec is outside the allow-list of codecs known to play
+  (`needsPlaybackRendition`; an unrecognised codec costs one unnecessary
+  transcode, whereas guessing the other way ships a black player), or when
+  the file carries a rotation flag, which Chromium applies and Safari on
+  the phone that wrote it does not. ffmpeg turns the frames upright as it
+  decodes and writes no flag, so every browser shows the frame the
+  pipeline analysed.
 - The copy (`libx264`, high profile, `yuv420p`, `veryfast`/CRF 23,
   `+faststart`, AAC audio when the source has audio) is written beside the
   upload as `<key>-playback.mp4`, recorded on `VideoAsset.playbackStorageKey`
@@ -244,13 +300,22 @@ correct overlay floating on it. So `prepare-playback.ts` transcodes
   re-encode was already unavoidable.
 
 Measured on a 28 s 3840×2160 HEVC upload: 11 s, 172 MB down to 22 MB. An
-upload that is already H.264/VP9/AV1 is not re-encoded at all.
+upload that is already H.264/VP9/AV1 and carries no rotation flag is not
+re-encoded at all.
 
 ### Playback with the overlay
 
 `GET /videos/{id}/telemetry` returns the stored stream.
-`components/video/TelemetryOverlayCanvas.tsx` lays a transparent canvas
-over the `<video>` and draws it with `renderOverlayFromPersistent`.
+`components/video/TelemetryOverlayCanvas.tsx` draws the video frame itself
+into its canvas (cropped to the frame's `view_rect` when the pipeline
+cropped one) and the analysis on top with `renderOverlayFromPersistent`
+and `keepBackground`; the `<video>` element decodes but is not shown,
+because a cropped and enlarged video element rendered differently on the
+phone. `VideoPlayer` shapes the stage like the picture and sets its height
+from the measured width, since Safari kept a stale CSS aspect-ratio height
+after a rotation. Its controls fade after 3 s without input, and its
+fullscreen falls back to pinning the surface over the page on an iPhone,
+which has no element fullscreen (`hooks/use-fullscreen.ts`).
 `lib/overlay-replay.ts` keeps a cursor into the stream: moving forward
 applies the frames in between, as live does, and a jump backwards rebuilds
 the state from a bounded window (`REBUILD_WINDOW`, 360 frames — longer
@@ -291,8 +356,8 @@ points differ only in what sits behind the overlay:
 
 | Entry point | Background | Used by |
 |---|---|---|
-| `renderFromPersistent(ctx, videoEl, state, viewport, layout)` | draws the video frame | live session (`FollowThroughOverlay.tsx`) — one canvas so `captureStream()` records both |
-| `renderOverlayFromPersistent(ctx, state, viewport, layout)` | transparent | playback (`TelemetryOverlayCanvas.tsx`) — sits over the `<video>` |
+| `renderFromPersistent(ctx, videoEl, state, viewport, layout)` | draws the video frame | live session (`FollowThroughOverlay.tsx`), the on-screen preview |
+| `renderOverlayFromPersistent(ctx, state, viewport, layout, { keepBackground })` | transparent, or what the caller drew | playback (`TelemetryOverlayCanvas.tsx`), which draws the video frame first |
 
 Rules for anyone editing it:
 
@@ -350,11 +415,12 @@ playback copy, its thumbnail and its telemetry, then recounts its session.
 | `GET`/`PUT /users/me` | profile and preferences (`preferences` is a partial patch) |
 | `GET /sessions`, `POST /sessions`, `GET`/`PUT`/`DELETE /sessions/{id}` | training sessions (unpaginated on purpose: the dashboard and pickers need them all) |
 | `GET /sessions/{id}/videos` | a session's videos |
-| `POST /sessions/{id}/videos` | ingest a live recording with known stats |
-| `POST /sessions/{id}/videos/process` | queue an upload for offline processing |
+| `POST /sessions/{id}/videos` | ingest a recording with known stats (no page calls it since live recordings go through `/process`) |
+| `PUT /videos/{id}/telemetry` | store telemetry collected elsewhere for a recording; recounts the video and its session (unused by the app, as above) |
+| `POST /sessions/{id}/videos/process` | queue an upload or a finished live recording for offline processing |
 | `GET /videos?page&size`, `GET`/`PUT`/`DELETE /videos/{id}` | the library (the one paginated resource) |
 | `GET /videos/{id}/telemetry`, `GET /videos/{id}/playback-url` | stored telemetry; a short-lived playback URL, fetched right before playing |
-| `POST /videos/upload-url` | somewhere to `PUT` a recording |
+| `POST /videos/upload-url` | somewhere to `PUT` a recording, keyed by the content type without its parameters (`video/mp4;codecs=avc1` is stored as `.mp4`; an unknown type as `.bin`, which the local blob `GET` serves by reading the file's header) |
 | `PUT`/`GET /videos/local-blob/{key}` | the local stand-in for S3 (PUT authenticated, GET public) |
 | `GET /analytics/summary`, `GET /analytics/shooting` | lifetime totals with recent-vs-prior deltas; per-session series |
 | `GET`/`POST /calendar/events`, `PUT`/`DELETE /calendar/events/{id}` | calendar, with `from`/`to` for a date window |
@@ -366,7 +432,9 @@ turns them into `ApiError`. Every query is scoped to the caller's account:
 a resource that belongs to someone else looks identical to one that does
 not exist. Auth is HS256 JWT (`JwtService`, subject = user id, 24 h); the signing
 secret comes from the `FOLLOWTHROUGH_JWT_SECRET` environment variable and
-has no default. CORS allows `http://localhost:8081`.
+has no default. CORS allows `http://localhost:8081`, or whatever
+`followthrough.cors.allowed-origins` names, which a deployment sets to its
+tunnel address.
 
 ### Swappable seams (local stand-ins for AWS)
 
@@ -408,7 +476,8 @@ linked with an rpath so the binary finds it without `LD_LIBRARY_PATH`.
 
 The intended deployment is GPU (`g*` instances) for live and CPU on Fargate
 spot for uploads; the CPU binary exists, but the API only invokes the GPU
-one and there is no container packaging yet (`BACKLOG.md`).
+one. The GPU tier is packaged in `deploy/docker/Dockerfile`; the CPU tier
+is not (`BACKLOG.md`).
 
 ---
 

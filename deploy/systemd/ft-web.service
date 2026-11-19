@@ -1,0 +1,16 @@
+[Unit]
+Description=FollowThrough web app (TanStack Start node server, :3000)
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/followthrough/follow-through-pro-19
+Environment=PORT=3000
+Environment=HOST=127.0.0.1
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node .output/server/index.mjs
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

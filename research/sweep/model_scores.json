@@ -1,0 +1,53 @@
+{
+  "metric": "mAP50-95 at the saved best.pt epoch (keypoint mAP for court and player)",
+  "source": "training results.csv in s3://<bucket>/weights/<name>/ for obj and court (best-fitness epoch); player: stock COCO-pretrained YOLO26-pose scored on COCO val2017 person keypoints (5000 images, Ultralytics val, FP16). CS692 notes section 15.",
+  "datasets": {
+    "obj": "detection val set, 250 images",
+    "court": "court keypoint val set, 103 images",
+    "player": "COCO val2017 person keypoints, 5000 images (not trained here; not comparable with obj or court)"
+  },
+  "scores": {
+    "obj-n-640": 0.73,
+    "obj-n-960": 0.747,
+    "obj-n-1280": 0.756,
+    "obj-m-640": 0.759,
+    "obj-m-960": 0.761,
+    "obj-m-1280": 0.765,
+    "obj-x-640": 0.756,
+    "obj-x-960": 0.756,
+    "obj-x-1280": 0.754,
+    "court-n-640": 0.628,
+    "court-n-960": 0.792,
+    "court-n-1280": 0.898,
+    "court-m-640": 0.811,
+    "court-m-960": 0.723,
+    "court-m-1280": 0.518,
+    "court-x-640": 0.944,
+    "court-x-960": 0.907,
+    "court-x-1280": 0.882,
+    "player-n-640": 0.569,
+    "player-n-960": 0.579,
+    "player-n-1280": 0.524,
+    "player-m-640": 0.682,
+    "player-m-960": 0.636,
+    "player-m-1280": 0.507,
+    "player-x-640": 0.711,
+    "player-x-960": 0.691,
+    "player-x-1280": 0.601
+  },
+  "app_models": {
+    "obj": {
+      "name": "app detector (python/runs/detect/train)",
+      "map50_95": 0.725
+    },
+    "court": {
+      "name": "app court model (python/runs/pose/train-MuSGD-1)",
+      "map50_95": 0.935
+    },
+    "player": {
+      "name": "app pose model (stock yolo26n-pose = player-n-640)",
+      "map50_95": 0.569
+    }
+  },
+  "app_models_source": "the saved best.pt of each run in python/runs, i.e. the best-fitness epoch: detector box mAP50-95 0.725 at epoch 63; court keypoint mAP50-95 0.935 at epoch 144 (fitness combines box and keypoint metrics; the keypoint score alone peaked at 0.939 at epoch 134). The app's pose model is the stock yolo26n-pose, the same as player-n-640."
+}

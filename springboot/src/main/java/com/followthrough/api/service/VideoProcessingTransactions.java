@@ -54,6 +54,24 @@ public class VideoProcessingTransactions {
                         });
     }
 
+    @Transactional(readOnly = true)
+    public String getStorageKey(String videoId) {
+        return videoRepository.findById(videoId).map(video -> video.getStorageKey()).orElse(null);
+    }
+
+    /** For a live recording whose totals are already right (set from its
+     * telemetry): only the status moves, once the thumbnail step is done. */
+    @Transactional
+    public void markComplete(String videoId) {
+        videoRepository
+                .findById(videoId)
+                .ifPresent(
+                        video -> {
+                            video.setStatus(ProcessingStatus.COMPLETE);
+                            video.getSession().setStatus(ProcessingStatus.COMPLETE);
+                        });
+    }
+
     @Transactional
     public void setThumbnailUrl(String videoId, String thumbnailUrl) {
         videoRepository.findById(videoId).ifPresent(video -> video.setThumbnailUrl(thumbnailUrl));

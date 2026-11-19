@@ -1,0 +1,30 @@
+# Reverse proxy for one FollowThrough instance. Listens on plain HTTP on port
+# 80; TLS is terminated by the Cloudflare tunnel (deploy/README.md) or by
+# whatever sits in front. One origin serves all three local processes, so the
+# web app needs no baked-in addresses (see src/services/http.ts and
+# src/config/streaming.ts): the API under its own context path, the
+# signaling relay at /relay, everything else the web app.
+:80 {
+	encode gzip
+
+	handle /api/v1/* {
+		reverse_proxy 127.0.0.1:8082
+	}
+
+	handle /relay {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	handle {
+		# The page itself must be fetched fresh on every load, so a deploy
+		# reaches a phone on its next reload. Without a Cache-Control header
+		# Safari applied its own heuristic and kept serving a stale page, and
+		# with it the previous build's scripts, minutes after a deploy. The
+		# scripts and styles carry a content hash in their names, so those
+		# may be kept for good.
+		@page not path /assets/*
+		header @page Cache-Control "no-cache"
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		reverse_proxy 127.0.0.1:3000
+	}
+}

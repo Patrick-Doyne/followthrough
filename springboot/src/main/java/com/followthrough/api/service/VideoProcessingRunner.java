@@ -85,8 +85,11 @@ public class VideoProcessingRunner {
      * a gallery tile; a missing playback copy for an upload no browser can
      * decode is a video that plays as a black rectangle, which is worse
      * than an honest failure.
+     *
+     * <p>Shared with LiveRecordingPreparer, which runs the same preparation
+     * script for a live recording.
      */
-    private void relocatePlaybackCopy(String videoId, String storageKey, File playbackFile) {
+    public void relocatePlaybackCopy(String videoId, String storageKey, File playbackFile) {
         if (playbackFile == null) {
             // The upload plays as it stands, so nothing was transcoded.
             return;
@@ -107,8 +110,11 @@ public class VideoProcessingRunner {
      * storage videos themselves live in, alongside the video under its
      * own session folder, and records the resulting URL. Best-effort: a
      * missing/unrelocatable thumbnail just means the gallery falls back
-     * to its placeholder, not a failed video. */
-    private void relocateThumbnail(String videoId, String storageKey, File thumbnailFile) {
+     * to its placeholder, not a failed video.
+     *
+     * <p>Shared with LiveRecordingPreparer, which runs the same preparation
+     * script for a live recording. */
+    public void relocateThumbnail(String videoId, String storageKey, File thumbnailFile) {
         if (thumbnailFile == null) {
             return;
         }

@@ -8,8 +8,22 @@
  * Spring Boot API's pinned local port and context path.
  */
 
+/**
+ * Where the API lives when nothing says otherwise. In development that is
+ * the pinned local port. Served from anywhere else (an EC2 instance behind a
+ * reverse proxy), it is this page's own origin, so one public address covers
+ * the app and the API and nothing has to be baked into the build.
+ */
+function defaultApiBaseUrl(): string {
+  if (typeof window !== "undefined") {
+    const { hostname, origin } = window.location;
+    if (hostname !== "localhost" && hostname !== "127.0.0.1") return `${origin}/api/v1`;
+  }
+  return "http://localhost:8082/api/v1";
+}
+
 export const API_BASE_URL =
-  (import.meta.env["VITE_API_BASE_URL"] as string | undefined) ?? "http://localhost:8082/api/v1";
+  (import.meta.env["VITE_API_BASE_URL"] as string | undefined) || defaultApiBaseUrl();
 
 export class ApiError extends Error {
   constructor(

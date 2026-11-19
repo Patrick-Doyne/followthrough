@@ -119,10 +119,6 @@ export const COMMANDS: CommandDef[] = [
   },
 ];
 
-export const COMMANDS_BY_ID: Record<string, CommandDef> = Object.fromEntries(
-  COMMANDS.map((command) => [command.id, command]),
-);
-
 const MOD_ORDER = ["mod", "alt", "shift"] as const;
 
 /** Whether "mod" means Cmd (Apple) or Ctrl (everything else). */

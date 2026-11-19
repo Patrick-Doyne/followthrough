@@ -1,0 +1,13 @@
+[Unit]
+Description=FollowThrough signaling relay (ws://127.0.0.1:8080)
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/followthrough/js
+ExecStart=/usr/bin/node mock-websocket.js
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

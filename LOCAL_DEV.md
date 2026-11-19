@@ -5,7 +5,7 @@ C++ live backend, the frontend dev server and the Spring Boot API with the
 real offline-processing engine. `ARCHITECTURE.md` explains what each piece
 does; `cpp/README.md` covers building the native side.
 
-Last checked on 29 September 2026.
+Last checked on 18 November 2026.
 
 ## The processes
 
@@ -105,7 +105,8 @@ curl http://localhost:8082/api/v1/actuator/health     # {"status":"UP"}
   to use the CPU detector instead, as `WALKTHROUGH.md` does) and
   `follow-through-pro-19/scripts/prepare-playback.ts` (via `npx tsx`, so the
   frontend's `npm install` must have run) for the thumbnail and, when the
-  upload's codec needs it, a browser-playable copy. Without the flag the
+  codec is one no browser plays or the file carries a rotation flag, an
+  upright H.264 copy. Without the flag the
   default `StubVideoProcessor` invents numbers and produces no telemetry,
   which is what the tests use. Neither engine ever modifies the uploaded
   file.
@@ -126,8 +127,15 @@ Open `http://localhost:8081` in a browser and sign in with the demo
 account. For a live session, open `/live` **on a machine with a camera**
 (this environment is WSL2; a browser on the Windows host reaches
 `localhost` through the automatic forwarding and uses the Windows webcam)
-and click **Start session** — nothing connects until then. **End session**
-tears it down and uploads the recording to the seeded session.
+and click **Start session** — nothing connects until then; starting also
+creates a training session for the run (unless it is a practice run).
+**End session** stops the recording, uploads it with a progress toast and
+queues it for the upload pipeline; the gallery shows it as processing until
+that pass finishes, and its numbers are the offline pass's, not the live
+preview's. Shot corrections made during the session are not carried over.
+The backend serves **one live viewer at a time**: a second browser, or
+`scripts/live-check.mjs` run during a phone test, makes the running session
+fail.
 
 For an upload, use **Upload video** on `/videos`: the file is `PUT` to the
 API, queued, and the gallery polls until processing completes. Measured on
@@ -141,7 +149,7 @@ shots, 60%, 1,680 telemetry messages stored, session totals rolled up.
 
 ```bash
 cd follow-through-pro-19
-npm test              # vitest run, one shot (43 files)
+npm test              # vitest run, one shot (48 files)
 npm run test:watch
 npx tsc --noEmit
 npm run lint          # eslint; the remaining warnings are react-refresh notes
@@ -171,6 +179,22 @@ frontend's dev dependencies.
 
 ## Known quirks worth knowing before you assume something is broken
 
+- **On the phone, use Microsoft Edge.** It is the browser the live session
+  currently works best in on an iPhone (same WebKit engine as Safari, but
+  Safari differed on the camera's frame rate, on a recording's rotation
+  flag and on page caching during testing). Fullscreen on an iPhone is a
+  surface pinned over the page, since iOS has no element fullscreen
+  (`hooks/use-fullscreen.ts`).
+- **Start a live session with the phone upright.** The recording keeps the
+  shape the phone had when the session started (the live page draws the
+  camera upright into a canvas of that shape, `LiveVideo.tsx`), and a
+  part shot after turning the phone is drawn inside that frame with black
+  bars; the offline pipeline crops to the picture (`picture_rect` in
+  `cpp/follow-through-batch.cpp`) and the player follows the crop. Starting
+  in portrait gives the vertical part full resolution and the horizontal
+  part a cropped one; starting in landscape does the reverse. Portrait is
+  the orientation the sessions that matter are shot in.
+
 - **20-second connect timeout.** If the C++ backend cannot be reached (not
   running, relay down), the Live page gives up after 20 s and shows a
   connection-issue card rather than hanging on "Almost ready"
@@ -184,16 +208,36 @@ frontend's dev dependencies.
   of the decoded frames (a running average, warmed up over the first 30
   frames), so a 60 fps phone and a 30 fps webcam both get correct flight
   and apex times; the `[PERF]` lines print it as `stream_fps`. The browser
-  asks the camera for the back-facing 4K60 as a preference, prefers H.264
-  (the codec phones encode in hardware), caps the upload at 40 Mbit/s so
-  4K is not silently downscaled, and shows the encoder it got (name,
-  size, rate, ms per frame) under the clock on the Live page.
+  asks for the back-facing camera at 1280×720 at 60 fps
+  (`config/streaming.ts`, asked again on the open track because Safari
+  opens at 30), and the backend's answer declares H.264 level 4.0, which a
+  phone's encoder plans its rate from (the SDK's default 3.1 held 720p to
+  30). It prefers H.264 (the codec phones encode in hardware) and shows the
+  encoder it got (name, size, rate, ms per frame) under the clock.
+- **The sender runs its own rate control.** The backend sends no bandwidth
+  feedback, so the browser's estimate only falls. The sender starts at
+  2 Mbit/s, floors at 1 Mbit/s, keeps its frame rate by shrinking the
+  picture, and every 2 s cuts its cap when the round trip rises well above
+  the link's lowest (`services/webrtc-live.ts`, logged as `rate cap` in the
+  relay). A cellular uplink carries about 1 Mbit/s cleanly, so the live
+  preview works on a smaller picture than the recording.
 - **H.264 decode uses NVDEC** (`h264_cuvid`) when libavcodec has it, which
   the system package does under WSL2; otherwise it falls back to software
   decoding on four frame threads, which adds three frames of latency and
-  is logged as such at startup.
+  is logged as such at startup. One NVDEC decoder follows a phone's
+  resolution changes in place (its frame pool is pre-sized to NVDEC's
+  ceiling; see cpp/README.md), so a stream that steps up from 720p a few
+  seconds in no longer stalls the session.
 - **Package manager.** The frontend uses npm and commits
   `package-lock.json`; there is no bun lockfile any more.
+
+- **A phone's side of a session is in the relay's log.** The live page
+  sends `diagnostic` lines to the relay (`lib/live-diagnostics.ts`):
+  browser and camera, connection states, candidates and the selected
+  path, the encoder's output every five seconds, and any page error. On a
+  phone there is no console, so when a session misbehaves, read
+  `grep diagnostic` on the relay's output (or `relay.log` in a
+  deployment) next to the backend's log before guessing.
 
 ## Publishing the sample assets (maintainer note)
 
@@ -214,6 +258,19 @@ The two `best.*` files share a basename, so copy them under the asset names
 before uploading (the release page or `gh release upload` both keep the
 file's own name). ONNX Runtime is fetched from Microsoft's releases and is
 not part of ours.
+
+## Running on an EC2 instance
+
+`deploy/README.md` puts the same stack on one GPU instance behind Caddy and
+a Cloudflare quick tunnel, as one container (Terraform and Docker) or as
+systemd units. The two
+settings that make that possible also apply locally: the backend reads
+`FT_RELAY_HOST` / `FT_RELAY_PORT` (default `localhost:8080`) and
+`FT_STUN_URL` (default Google's STUN server; `FT_TURN_URL` adds a relay),
+and the web app, when served from anywhere but `localhost`, talks to its
+own origin for the API (`/api/v1`) and the relay (`/relay`) unless
+`VITE_API_BASE_URL` / `VITE_SIGNALING_RELAY_URL` say otherwise.
+`npm run build:node` produces the node-server build those units run.
 
 ## Where things live
 

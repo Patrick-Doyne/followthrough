@@ -14,8 +14,10 @@
  * the theme the way the player's does, and an orange HUD on a violet
  * theme is worse than no HUD at all.
  *
- * <p>2. **A playback rendition, only when the browser could not play the
- * upload.** Phones shoot HEVC, and no Chromium-based browser will decode
+ * <p>2. **A playback copy, only when the upload cannot be played as it
+ * is** -- for a codec no browser decodes, or for a rotation flag, which
+ * Chromium applies and Safari on the phone that wrote it does not (see
+ * `needsPlaybackCopy`). Phones shoot HEVC, and no Chromium-based browser will decode
  * it: `canPlayType('video/mp4; codecs="hvc1"')` returns empty and the
  * element reports `videoWidth === 0`, which draws as a black rectangle
  * with the overlay still painting correctly over it. Until this existed
@@ -23,9 +25,10 @@
  * the overlay in, and H.264 fell out of that. Removing the burn removed
  * the accidental transcode with it.
  *
- * <p>So the transcode is now explicit, deliberate and conditional: it runs
- * only for a source the browser cannot play, and it writes a **separate**
- * file. The upload stays exactly as it arrived, which is the rule.
+ * <p>So the transcode is explicit, deliberate and conditional: it runs only
+ * for a source that would not play right as it is, turns its frames
+ * upright, and writes a **separate** file. The upload stays exactly as it
+ * arrived, which is the rule.
  */
 import { spawn } from "node:child_process";
 import * as fsp from "node:fs/promises";
@@ -33,8 +36,9 @@ import ffmpegPath from "ffmpeg-static";
 import ffprobeStatic from "ffprobe-static";
 
 import {
-  needsPlaybackRendition,
+  needsPlaybackCopy,
   playbackSize,
+  uprightSize,
   type SourceFormat,
 } from "../src/lib/playback-format.ts";
 import type { OverlayTelemetryMessage } from "../src/types/overlay-telemetry.ts";
@@ -170,8 +174,9 @@ function probeSource(videoPath: string): Promise<SourceFormat> {
     const probe = spawn((ffprobeStatic as { path: string }).path, [
       "-v",
       "error",
-      "-show_entries",
-      "stream=codec_type,codec_name,width,height",
+      // Every stream field: the rotation flag lives in a sub-section the
+      // bundled ffprobe cannot be asked for by name.
+      "-show_streams",
       "-of",
       "json",
       videoPath,
@@ -199,11 +204,20 @@ function probeSource(videoPath: string): Promise<SourceFormat> {
         reject(new Error("The upload carries no video stream."));
         return;
       }
+      // Older ffprobe builds report the flag as a "rotate" tag, newer ones
+      // as display-matrix side data; either way only "is there one" matters.
+      const tags = (video["tags"] ?? {}) as Record<string, unknown>;
+      const sideData = (video["side_data_list"] ?? []) as Record<string, unknown>[];
+      const rotation =
+        Number(tags["rotate"] ?? 0) ||
+        Number(sideData.find((d) => d["rotation"] != null)?.["rotation"] ?? 0) ||
+        0;
       resolve({
         width: Number(video["width"]) || 0,
         height: Number(video["height"]) || 0,
         videoCodec: String(video["codec_name"] ?? ""),
         audioCodec: audio ? String(audio["codec_name"] ?? "") : null,
+        rotation,
       });
     });
     probe.on("error", reject);
@@ -245,10 +259,13 @@ function transcodeForPlayback(
   videoPath: string,
   outputPath: string,
   source: SourceFormat,
+  size: { width: number; height: number },
 ): Promise<void> {
-  const size = playbackSize(source.width, source.height);
   return run("playback transcode", [
     "-y",
+    // ffmpeg turns the frames upright by the file's flag as it decodes
+    // and writes no flag, so the copy plays upright everywhere, which is
+    // also how the pipeline read it (see SourceFormat.rotation).
     "-i",
     videoPath,
     "-vf",
@@ -317,7 +334,7 @@ async function main() {
   const source = await probeSource(inputVideoPath);
   await extractThumbnail(inputVideoPath, thumbnailOutputPath, thumbnailFrameId / metadata.fps);
 
-  if (!needsPlaybackRendition(source)) {
+  if (!needsPlaybackCopy(source)) {
     // Nothing is written to playbackOutputPath, and the backend reads that
     // absence as "serve the upload itself".
     console.log(
@@ -328,13 +345,17 @@ async function main() {
     process.exit(0);
   }
 
-  const size = playbackSize(source.width, source.height);
-  await transcodeForPlayback(inputVideoPath, playbackOutputPath, source);
+  // The scale filter runs after ffmpeg's own turn, so it is given the
+  // upright size or a portrait copy would be squashed.
+  const upright = uprightSize(source);
+  const size = playbackSize(upright.width, upright.height);
+  await transcodeForPlayback(inputVideoPath, playbackOutputPath, source, size);
   const { size: bytes } = await fsp.stat(playbackOutputPath);
   console.log(
     `Thumbnail at frame ${thumbnailFrameId}. Source is ${source.videoCodec}` +
-      `${source.audioCodec ? `/${source.audioCodec}` : ""} at ${source.width}x${source.height}, ` +
-      `which no browser will decode -- wrote a ${size.width}x${size.height} H.264 playback copy ` +
+      `${source.audioCodec ? `/${source.audioCodec}` : ""} at ${source.width}x${source.height}` +
+      `${source.rotation ? ` with a ${source.rotation} degree rotation flag` : ""} -- wrote a ` +
+      `${size.width}x${size.height} upright H.264 playback copy ` +
       `(${(bytes / 1_000_000).toFixed(1)} MB). Recording left untouched.`,
   );
   process.exit(0);

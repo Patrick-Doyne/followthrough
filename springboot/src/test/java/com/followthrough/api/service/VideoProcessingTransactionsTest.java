@@ -132,6 +132,56 @@ class VideoProcessingTransactionsTest {
     }
 
     @Test
+    void getStorageKeyReturnsTheVideosKeyOrNullWhenItIsGone() {
+        VideoAsset video = video(sessionWithStats(0, 0, 0.0, 0.0, 0.0, 0.0));
+        when(videoRepository.findById("video-001")).thenReturn(Optional.of(video));
+        when(videoRepository.findById("gone")).thenReturn(Optional.empty());
+
+        assertThat(transactionsWithRepo().getStorageKey("video-001")).isEqualTo("sessions/session-001/upload.mp4");
+        assertThat(transactionsWithRepo().getStorageKey("gone")).isNull();
+    }
+
+    @Test
+    void markCompleteMovesOnlyTheStatusOfVideoAndSession() {
+        TrainingSession session = sessionWithStats(5, 3, 60.0, 12.0, 0.8, 0.4);
+        VideoAsset video = video(session);
+        when(videoRepository.findById("video-001")).thenReturn(Optional.of(video));
+
+        transactionsWithRepo().markComplete("video-001");
+
+        assertThat(video.getStatus()).isEqualTo(ProcessingStatus.COMPLETE);
+        assertThat(session.getStatus()).isEqualTo(ProcessingStatus.COMPLETE);
+        // A live recording's totals were set from its telemetry already.
+        assertThat(session.getShots()).isEqualTo(5);
+        assertThat(session.getMakes()).isEqualTo(3);
+    }
+
+    @Test
+    void markCompleteDoesNothingWhenTheVideoIsGone() {
+        when(videoRepository.findById("gone")).thenReturn(Optional.empty());
+
+        transactionsWithRepo().markComplete("gone");
+    }
+
+    @Test
+    void setPlaybackStorageKeyPointsPlaybackAtTheCopyAndLeavesTheUploadAlone() {
+        VideoAsset video = video(sessionWithStats(0, 0, 0.0, 0.0, 0.0, 0.0));
+        when(videoRepository.findById("video-001")).thenReturn(Optional.of(video));
+
+        transactionsWithRepo().setPlaybackStorageKey("video-001", "sessions/session-001/upload-playback.mp4");
+
+        assertThat(video.getPlaybackStorageKey()).isEqualTo("sessions/session-001/upload-playback.mp4");
+        assertThat(video.getStorageKey()).isEqualTo("sessions/session-001/upload.mp4");
+    }
+
+    @Test
+    void setPlaybackStorageKeyDoesNothingWhenTheVideoIsGone() {
+        when(videoRepository.findById("gone")).thenReturn(Optional.empty());
+
+        transactionsWithRepo().setPlaybackStorageKey("gone", "sessions/x/y.mp4");
+    }
+
+    @Test
     void markFailedSetsBothVideoAndSessionToFailed() {
         TrainingSession session = sessionWithStats(0, 0, 0.0, 0.0, 0.0, 0.0);
         VideoAsset video = video(session);

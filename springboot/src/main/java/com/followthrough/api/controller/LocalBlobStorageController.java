@@ -72,7 +72,40 @@ public class LocalBlobStorageController {
         if (!Files.isRegularFile(target)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "No local recording at " + storageKey);
         }
-        return ResponseEntity.ok().contentType(mediaTypeFor(storageKey)).body(new FileSystemResource(target));
+        MediaType type = mediaTypeFor(storageKey);
+        if (MediaType.APPLICATION_OCTET_STREAM.equals(type)) {
+            type = sniffMediaType(target);
+        }
+        return ResponseEntity.ok().contentType(type).body(new FileSystemResource(target));
+    }
+
+    /**
+     * The container a stored file actually is, read from its first bytes,
+     * for a key whose extension says nothing.
+     *
+     * <p>Only for those: a key with a real extension is served as what it
+     * says, as a bucket would. This exists for the recordings already
+     * stored as ".bin" before LocalUploadUrlService learned to read a
+     * recorder's parameterised type -- they are real recordings that
+     * must stay exactly as uploaded, and a phone refuses to play a video
+     * served as an octet-stream.
+     */
+    static MediaType sniffMediaType(Path file) {
+        byte[] head = new byte[12];
+        int read;
+        try (var in = Files.newInputStream(file)) {
+            read = in.readNBytes(head, 0, head.length);
+        } catch (IOException e) {
+            return MediaType.APPLICATION_OCTET_STREAM;
+        }
+        if (read >= 8 && head[4] == 'f' && head[5] == 't' && head[6] == 'y' && head[7] == 'p') {
+            return MediaType.valueOf("video/mp4");
+        }
+        if (read >= 4 && (head[0] & 0xff) == 0x1a && (head[1] & 0xff) == 0x45 && (head[2] & 0xff) == 0xdf
+                && (head[3] & 0xff) == 0xa3) {
+            return MediaType.valueOf("video/webm");
+        }
+        return MediaType.APPLICATION_OCTET_STREAM;
     }
 
     /**

@@ -27,6 +27,19 @@ export interface SourceFormat {
   videoCodec: string;
   /** null when the recording carries no audio track. */
   audioCodec: string | null;
+  /** The rotation flag the file carries, in degrees, 0 when none. A
+   * phone writes one on every portrait recording. Whether a player
+   * honours it is up to the player (Chromium does, Safari on the phone
+   * that wrote it does not), so a flagged file always gets a playback
+   * copy with the frames turned upright and no flag: every browser then
+   * shows the same upright picture, the one the pipeline analysed. */
+  rotation: number;
+}
+
+/** Whether a playback copy is needed at all: for a codec no browser plays,
+ * or for a rotation flag no browser can be trusted with. */
+export function needsPlaybackCopy(source: SourceFormat): boolean {
+  return needsPlaybackRendition(source) || source.rotation !== 0;
 }
 
 /**
@@ -60,6 +73,15 @@ export function needsPlaybackRendition(source: SourceFormat): boolean {
  * <p>Rounded to even numbers because yuv420p -- the pixel format every
  * browser decodes in hardware -- cannot represent odd dimensions.
  */
+/** The frame's size once the rotation flag is applied: a quarter turn
+ * swaps the sides. */
+export function uprightSize(source: SourceFormat): { width: number; height: number } {
+  const quarter = Math.abs(source.rotation) % 180 === 90;
+  return quarter
+    ? { width: source.height, height: source.width }
+    : { width: source.width, height: source.height };
+}
+
 export function playbackSize(
   width: number,
   height: number,

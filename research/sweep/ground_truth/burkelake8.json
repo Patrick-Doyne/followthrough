@@ -1,0 +1,58 @@
+{
+  "video": "videos/train3/burkelake8.MOV",
+  "fps": 60,
+  "frames": 1674,
+  "match_tolerance_frames": 60,
+  "range_classes": [
+    "LAY_UP",
+    "CLS_RNG",
+    "MID_RNG",
+    "HS_3PT",
+    "NCAA_3PT",
+    "NBA_3PT"
+  ],
+  "notes": "result_frame is when the make/miss is decided (rim or net), as the pipeline reports it; a predicted shot matches the ground-truth shot whose result_frame is within match_tolerance_frames.",
+  "shots": [
+    {
+      "shot": 1,
+      "release_frame": 118,
+      "result_frame": 201,
+      "result": "make",
+      "taped_distance_ft": 16.49,
+      "range_class": "MID_RNG"
+    },
+    {
+      "shot": 2,
+      "release_frame": 623,
+      "result_frame": 741,
+      "result": "miss",
+      "taped_distance_ft": 15.91,
+      "range_class": "MID_RNG"
+    },
+    {
+      "shot": 3,
+      "release_frame": 1159,
+      "result_frame": 1233,
+      "result": "make",
+      "taped_distance_ft": 11.78,
+      "range_class": "MID_RNG"
+    },
+    {
+      "shot": 4,
+      "release_frame": 1397,
+      "result_frame": 1470,
+      "result": "make",
+      "taped_distance_ft": 5.87,
+      "range_class": "CLS_RNG"
+    },
+    {
+      "shot": 5,
+      "release_frame": 1532,
+      "result_frame": 1575,
+      "result": "miss",
+      "taped_distance_ft": 0.68,
+      "range_class": "LAY_UP"
+    }
+  ],
+  "source": "Shot count and make/miss: the recorded outcomes of the session. Distance and range class: the reference pipeline's output for this clip (the app's models, detector every frame, court every 10 frames, pose near release), accepted by the student as ground truth on 19 Nov 2026. The field name taped_distance_ft is kept for the scorer; these distances are not tape measurements."
+}

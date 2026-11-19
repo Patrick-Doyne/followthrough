@@ -41,7 +41,8 @@ python/videos/*
 # Training-run folders keep their metrics, plots and args; not the sample
 # batch mosaics (about 48 MB across the runs).
 python/runs/**/*_batch*.jpg
-python/=
+# Engines fetch_and_build.sh builds in passing.
+python/models/
 *.pt
 *.engine
 *.onnx
@@ -64,3 +65,19 @@ Thumbs.db
 *.log
 *.swp
 *~
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# ---------------------------------------------------------------------------
+# Terraform working state, for every stack (deploy/terraform,
+# research/training/terraform, research/sweep/terraform): never published.
+# ---------------------------------------------------------------------------
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfplan
+crash.log

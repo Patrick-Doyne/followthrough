@@ -149,27 +149,35 @@ export const videosService = {
    * absolute URL (S3 in production, the local blob route in development),
    * never this app's own /api/v1 base path.
    */
-  uploadRecording: async (uploadUrl: string, blob: Blob) => {
-    const token = getAuthToken();
-    const response = await fetch(uploadUrl, {
-      method: "PUT",
-      headers: {
-        // A real presigned S3 PUT needs a real Content-Type too (see
-        // LocalBlobStorageController) -- a File picked via <input
-        // type="file"> can have an empty .type for formats the browser
-        // doesn't recognize, so this never sends a blank one.
-        "Content-Type": blob.type || "application/octet-stream",
-        // This PUT goes straight to uploadUrl, bypassing request() (see
-        // this function's own doc comment above) -- so unlike every other
-        // call in this file, it has to attach the bearer token itself.
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: blob,
-    });
-    if (!response.ok) {
-      throw new Error(`Recording upload failed with status ${response.status}`);
-    }
-  },
+  uploadRecording: (uploadUrl: string, blob: Blob, onProgress?: (fraction: number) => void) =>
+    new Promise<void>((resolve, reject) => {
+      // XMLHttpRequest rather than fetch for the one thing fetch cannot
+      // do: report upload progress. A phone on cellular sends a recording
+      // at about a megabit a second, so a session of a few minutes takes
+      // minutes to save, and without progress that looked like a stall.
+      const token = getAuthToken();
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", uploadUrl);
+      // A real presigned S3 PUT needs a real Content-Type too (see
+      // LocalBlobStorageController) -- a File picked via <input
+      // type="file"> can have an empty .type for formats the browser
+      // doesn't recognize, so this never sends a blank one.
+      xhr.setRequestHeader("Content-Type", blob.type || "application/octet-stream");
+      // This PUT goes straight to uploadUrl, bypassing request() (see
+      // this function's own doc comment above) -- so unlike every other
+      // call in this file, it has to attach the bearer token itself.
+      if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable && event.total > 0) onProgress?.(event.loaded / event.total);
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) resolve();
+        else reject(new Error(`Recording upload failed with status ${xhr.status}`));
+      };
+      xhr.onerror = () => reject(new Error("Recording upload failed: the connection dropped."));
+      xhr.onabort = () => reject(new Error("Recording upload was interrupted."));
+      xhr.send(blob);
+    }),
 };
 
 export const calendarService = {

@@ -12,7 +12,7 @@ on its own.
 - **Platform**: WSL2, Ubuntu 26.04 LTS
 - **GPU**: NVIDIA GeForce RTX 3090
 - **Python**: 3.14
-- **Virtual environment**: `~/.venvs/followthrough`
+- **Virtual environment**: `~/.venvs/courtvision` on the development machine (created before the product was renamed; the system `python3` carries the same packages). `deploy/ec2-setup.sh` creates `~/.venvs/followthrough` on an instance.
 - **Ultralytics**: 8.4.121
 - **PyTorch**: 2.13.0+cu130
 - **TensorRT (Python package)**: 11.2.1.2
@@ -47,7 +47,9 @@ is intentionally isolated from any system-level Python):
 OpenCV Video Processing/
 └── python/
     ├── follow_through.py           # main real-time pipeline
-    ├── export_tensorrt.py        # .pt -> .engine export
+    ├── export_engines.py         # .pt -> .engine export, run on the GPU that will load them
+    ├── build_engines.py          # ONNX -> .engine with TensorRT alone (no PyTorch), for a fresh instance
+    ├── wrap_fp16_onnx.py         # gives an FP16 ONNX export float32 input/output for the C++ binaries
     ├── train_detect.py           # detect model training
     ├── train_detect_480.py       # detect model training (480 variant, ruled out)
     ├── validate_detect.py        # accuracy comparison across trained variants
@@ -81,16 +83,18 @@ against, and what the C++ port loads directly.
 
 **Engines are tied to their exact build environment** (GPU, driver,
 CUDA, TensorRT version). Re-export whenever any of those change —
-see `export_tensorrt.py`.
+see `export_engines.py`.
 
 ## Running the export
 
 ```bash
-python export_tensorrt.py
+python export_engines.py
 ```
 
-Exports all three models to `.engine` at the `imgsz`/precision
-settings currently configured in the script. Takes a few minutes
+Exports all three models to `.engine` at the sizes the C++ binaries
+were measured with (detector 640, court keypoints 640, shooter pose 480;
+`FT_DETECT_IMGSZ` / `FT_COURT_IMGSZ` / `FT_POSE_IMGSZ` override them), in
+FP16. Takes a few minutes
 per model on first export — TensorRT is profiling kernel
 implementations for this exact GPU, not just converting a file
 format.
@@ -120,5 +124,5 @@ path rather than raising an exception).
 
 `SHOW_DISPLAY_WINDOW` near the top controls whether a local debug
 window is shown. Set `True` for local development/testing; the
-production target (frames funneled to a frontend via Kinesis Video
-Streams, not displayed locally) should run with this `False`.
+production target should run with this `False`; what runs live today is
+the C++ port, `cpp/follow-through-webrtc.cpp`.

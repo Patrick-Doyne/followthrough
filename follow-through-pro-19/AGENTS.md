@@ -11,3 +11,7 @@ here syncs anywhere.
 - The overlay renderer (`src/lib/overlay-renderer.ts`) is shared by the live
   and playback surfaces; animation is driven by telemetry `frame_id`, never
   wall-clock time.
+
+- The live page's telemetry is a preview. The saved session is the
+  recording analysed by the offline pipeline (`routes/live.tsx`); do not
+  persist live telemetry. Live sessions start with the phone upright.

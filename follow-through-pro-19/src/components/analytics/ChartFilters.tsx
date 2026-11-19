@@ -184,7 +184,7 @@ export function ChartFilters({
         </p>
       )}
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
         <Field label="Training session" active={filters.sessionId !== "ALL"}>
           <Select value={filters.sessionId} onValueChange={(v) => set("sessionId", v)}>
             <SelectTrigger

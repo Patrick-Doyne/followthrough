@@ -45,6 +45,14 @@ wss.on("connection", (ws) => {
       parsed = null;
     }
 
+    if (parsed && parsed.type === "diagnostic") {
+      // Phone-side diagnostics from the live page (the frontend's
+      // src/lib/live-diagnostics.ts): the only log a phone can write to.
+      // Printed next to the backend's own log, never forwarded.
+      console.log(`[diagnostic] ${parsed.detail}`);
+      return;
+    }
+
     if (parsed && parsed.type) {
       console.log(`[relay] forwarding "${parsed.type}" message`);
     }

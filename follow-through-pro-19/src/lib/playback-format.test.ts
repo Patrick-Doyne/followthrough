@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  needsPlaybackCopy,
+  uprightSize,
   needsPlaybackRendition,
   playbackSize,
   PLAYBACK_LONG_EDGE,
@@ -12,6 +14,7 @@ const source = (overrides: Partial<SourceFormat> = {}): SourceFormat => ({
   height: 2160,
   videoCodec: "h264",
   audioCodec: "aac",
+  rotation: 0,
   ...overrides,
 });
 
@@ -85,5 +88,25 @@ describe("playbackSize", () => {
 
   it("does not divide by zero on a source that reported no size", () => {
     expect(playbackSize(0, 0)).toEqual({ width: 2, height: 2 });
+  });
+});
+
+describe("needsPlaybackCopy", () => {
+  it("is needed for a rotation flag even when the codec plays everywhere", () => {
+    expect(needsPlaybackCopy(source())).toBe(false);
+    expect(needsPlaybackCopy(source({ rotation: 90 }))).toBe(true);
+    expect(needsPlaybackCopy(source({ rotation: -90 }))).toBe(true);
+    expect(needsPlaybackCopy(source({ videoCodec: "hevc" }))).toBe(true);
+  });
+});
+
+describe("uprightSize", () => {
+  it("swaps the sides for a quarter turn either way and keeps them otherwise", () => {
+    const at = (rotation: number) => uprightSize(source({ width: 1280, height: 720, rotation }));
+    expect(at(90)).toEqual({ width: 720, height: 1280 });
+    expect(at(-90)).toEqual({ width: 720, height: 1280 });
+    expect(at(270)).toEqual({ width: 720, height: 1280 });
+    expect(at(180)).toEqual({ width: 1280, height: 720 });
+    expect(at(0)).toEqual({ width: 1280, height: 720 });
   });
 });

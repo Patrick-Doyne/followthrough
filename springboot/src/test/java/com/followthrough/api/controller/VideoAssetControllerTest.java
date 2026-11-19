@@ -1,6 +1,7 @@
 package com.followthrough.api.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.verify;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -17,6 +18,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,6 +34,10 @@ class VideoAssetControllerTest {
 
     @Autowired private MockMvc mockMvc;
     @Autowired private com.followthrough.api.service.TelemetryStore telemetryStore;
+    // Mocked so storing live telemetry does not start the real preparation
+    // script against a recording that does not exist; it used to do nothing
+    // only because the test's transaction hid the row from the async thread.
+    @MockitoBean private com.followthrough.api.service.LiveRecordingPreparer liveRecordingPreparer;
 
     @Test
     void listReturnsThePageEnvelopeWithTheSeededVideos() throws Exception {
@@ -129,6 +135,63 @@ class VideoAssetControllerTest {
     }
 
     /**
+     * A live session hands over the telemetry it collected once its
+     * recording is ingested. It must come back for playback the way a
+     * processed upload's does (metadata stripped, fps kept) and recount the
+     * video with the same arithmetic as offline processing.
+     */
+    @Test
+    void storingLiveTelemetryKeepsItForPlaybackAndRecountsTheVideo() throws Exception {
+        String ingested =
+                mockMvc.perform(
+                                post("/sessions/session-001/videos")
+                                        .contentType(MediaType.APPLICATION_JSON)
+                                        .content(
+                                                """
+                                                {
+                                                  "title": "Live recording",
+                                                  "date": "2026-11-18T15:00:00Z",
+                                                  "durationSeconds": 30,
+                                                  "storageKey": "sessions/session-001/live.webm",
+                                                  "analyzedShots": 0,
+                                                  "shootingPercentage": 0,
+                                                  "sizeMb": 2
+                                                }
+                                                """))
+                        .andExpect(status().isCreated())
+                        .andReturn()
+                        .getResponse()
+                        .getContentAsString();
+        String videoId = JsonPath.read(ingested, "$.videoId");
+
+        mockMvc.perform(
+                        put("/videos/" + videoId + "/telemetry")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(
+                                        """
+                                        [
+                                          {"type": "metadata", "fps": 30, "frame_width": 1920, "frame_height": 1080, "source": "live"},
+                                          {"type": "frame", "frame_id": 0, "frame_width": 1920, "frame_height": 1080},
+                                          {"type": "frame", "frame_id": 45, "frame_width": 1920, "frame_height": 1080,
+                                           "shot_distance_ft": 15.2, "shot_duration": 1.1, "time_to_apex": 0.5},
+                                          {"type": "shot_event", "frame_id": 45, "result": "MAKE", "makes": 1, "misses": 0}
+                                        ]
+                                        """))
+                .andExpect(status().isOk())
+                // PROCESSING until the thumbnail step (LiveRecordingPreparer) marks it complete.
+                .andExpect(jsonPath("$.status").value("PROCESSING"))
+                .andExpect(jsonPath("$.analyzedShots").value(1))
+                .andExpect(jsonPath("$.shootingPercentage").value(100.0));
+        verify(liveRecordingPreparer).prepareAsync(videoId);
+
+        mockMvc.perform(get("/videos/" + videoId + "/telemetry"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.fps").value(30.0))
+                .andExpect(jsonPath("$.messages.length()").value(3))
+                .andExpect(jsonPath("$.messages[2].type").value("shot_event"));
+    }
+
+    /**
      * A delete the UI calls permanent has to be permanent. The telemetry
      * is the part most easily orphaned: it is keyed by video id rather
      * than related to the row, so nothing cascades.
@@ -164,6 +227,60 @@ class VideoAssetControllerTest {
 
         assertThat(telemetryStore.load(videoId)).isEmpty();
         mockMvc.perform(get("/videos/" + videoId)).andExpect(status().isNotFound());
+    }
+
+    /** Deleting a session's only recording leaves nothing to count: the
+     * totals go back to zero rather than dividing by it. */
+    @Test
+    void deletingASessionsOnlyVideoResetsItsTotalsToZero() throws Exception {
+        String created =
+                mockMvc.perform(
+                                post("/sessions")
+                                        .contentType(MediaType.APPLICATION_JSON)
+                                        .content(
+                                                """
+                                                {
+                                                  "name": "One-video session",
+                                                  "date": "2026-09-24T18:00:00Z",
+                                                  "durationMinutes": 30,
+                                                  "location": "Backyard Court",
+                                                  "trainingType": "SHOOTING"
+                                                }
+                                                """))
+                        .andExpect(status().isCreated())
+                        .andReturn()
+                        .getResponse()
+                        .getContentAsString();
+        String sessionId = JsonPath.read(created, "$.sessionId");
+        String ingested =
+                mockMvc.perform(
+                                post("/sessions/" + sessionId + "/videos")
+                                        .contentType(MediaType.APPLICATION_JSON)
+                                        .content(
+                                                """
+                                                {
+                                                  "title": "The only video",
+                                                  "date": "2026-09-24T18:00:00Z",
+                                                  "durationSeconds": 60,
+                                                  "storageKey": "sessions/one-video/only.mp4",
+                                                  "analyzedShots": 4,
+                                                  "shootingPercentage": 50,
+                                                  "sizeMb": 2
+                                                }
+                                                """))
+                        .andExpect(status().isCreated())
+                        .andReturn()
+                        .getResponse()
+                        .getContentAsString();
+        String videoId = JsonPath.read(ingested, "$.videoId");
+
+        mockMvc.perform(delete("/videos/" + videoId)).andExpect(status().isNoContent());
+
+        mockMvc.perform(get("/sessions/" + sessionId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.shots").value(0))
+                .andExpect(jsonPath("$.makes").value(0))
+                .andExpect(jsonPath("$.shootingPercentage").value(0.0));
     }
 
     @Test

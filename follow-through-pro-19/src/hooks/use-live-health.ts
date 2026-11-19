@@ -21,8 +21,7 @@ import type { EncoderStats, WebRTCLiveSession } from "@/services/webrtc-live";
  *   when one is crossed, so a stall re-renders twice, not sixty times.
  *   <li>It never reads the canvas. Sampling pixels from a 3840x2160 surface
  *   means a GPU readback stall of tens of milliseconds, which would cost the
- *   very frames it is meant to protect — and would contend with the
- *   `captureStream` feeding the recorder.
+ *   very frames it is meant to protect.
  * </ul>
  */
 

@@ -26,7 +26,7 @@
  * retry loop here worth having.
  */
 
-import { signalingConfig } from "@/config/streaming";
+import { LIVE_CAPTURE, signalingConfig } from "@/config/streaming";
 import {
   attemptTimeoutMs,
   MAX_ATTEMPTS,
@@ -59,6 +59,17 @@ interface Attempt {
   /** Serialises signalling handlers so they cannot interleave. */
   queue: Promise<void>;
   disposed: boolean;
+  /** Periodic diagnostics while connected (reportStats). */
+  statsTimer: ReturnType<typeof setInterval> | null;
+  /** The delay control's pacing (controlRate). */
+  rateTimer: ReturnType<typeof setInterval> | null;
+  /** The video sender, for the delay control to cap. */
+  videoSender: RTCRtpSender | null;
+  /** The delay control's state. */
+  sendCapKbps: number;
+  cleanChecks: number;
+  /** The lowest round trip seen on this link, the delay control's baseline. */
+  rttFloorMs: number | null;
 }
 export type WebRTCStateListener = (state: WebRTCConnectionState, detail: string) => void;
 
@@ -82,7 +93,7 @@ export interface EncoderStats {
   qualityLimitation: string | null;
 }
 
-/** One line for the live page's HUD: "MediaCodec · 3840×2160 · 60 fps · 4.1 ms/frame".
+/** One line for the live page's HUD: "MediaCodec · 1280×720 · 60 fps · 4.1 ms/frame".
  * Parts the browser has not reported yet are left out. */
 export function describeEncoderStats(encoder: EncoderStats): string {
   const parts: string[] = [];
@@ -97,10 +108,307 @@ export function describeEncoderStats(encoder: EncoderStats): string {
   return parts.join(" · ");
 }
 
-/** The upload bit-rate cap. WebRTC's default is a few megabits, which is
- * far too low for 4K60 and makes it downscale silently; 40 Mbit/s keeps 4K
- * intact on a LAN and leaves the real limit to be the encoder. */
-const MAX_VIDEO_BITRATE_BPS = 40_000_000;
+/** The upload bit-rate cap, start and floor for one captured size. */
+export interface BitrateEnvelope {
+  maxBps: number;
+  /** The same cap in kbit/s, the unit the SDP and the delay control use. */
+  maxKbps: number;
+  startKbps: number;
+  minKbps: number;
+}
+
+/** The cap at 3840x2160, scaled down with the captured area. WebRTC's
+ * default cap is a few megabits, which makes a large picture downscale
+ * silently; this keeps the picture intact on a LAN and leaves the real
+ * limit to be the encoder. It is scaled rather than fixed because a phone
+ * encoder given a 40 Mbit/s target for 720p spends it on nothing and stalls
+ * on the bursts. */
+const BITRATE_AT_4K_BPS = 40_000_000;
+const PIXELS_AT_4K = 3840 * 2160;
+const BITRATE_FLOOR_BPS = 2_500_000;
+/** Where a session starts sending and the least it may send, in kbit/s,
+ * whatever the capture size.
+ *
+ * The floor is the rate a session runs at. The backend sends none of the
+ * feedback the sender's estimator grows on, so the estimate only ever
+ * falls, and it reaches the floor within ten seconds of connecting even
+ * on a loss-free LAN (measured: 2000, 1280, 800 at a round trip of 0 ms).
+ * So the floor is chosen as the rate the worst link in use carries: a
+ * phone's cellular uplink at a court, which at 4.4 Mbit/s pinned queued
+ * five seconds of round trip and lost frames by the dozen, and carries
+ * about 1 Mbit/s cleanly. At that rate the encoder, told to keep its
+ * frame rate (addLocalTrack), sends 30 fps at about 960x540; the detector
+ * letterboxes every frame to 640 pixels and sees no difference. */
+const START_KBPS = 2_000;
+const MIN_KBPS = 1_000;
+
+/**
+ * The sender's own delay control, since the backend offers none.
+ *
+ * Browsers back a sender off on packet loss, and off delay only with the
+ * transport feedback the KVS SDK does not send. A cellular uplink rarely
+ * drops packets: it queues them, and a queue is invisible to a loss-based
+ * controller until it is seconds deep -- which is exactly what the court
+ * logs show, a round trip climbing from 40 ms to 9 s while the sender
+ * reported no loss. So the session measures the round trip itself every
+ * two seconds and caps the encoder on how far it has risen above the
+ * lowest round trip seen on this link: a queue is delay that grows, while
+ * a cellular link's own latency can sit at 600 ms with nothing queued
+ * (measured, and a first version that cut on the absolute value starved
+ * the picture to 360x640 for no gain). Cut when the rise passes 200 ms,
+ * climb back gently once it has stayed under 80 ms for three checks,
+ * never below 800 kbit/s -- below that the picture is too small for the
+ * detector to be worth sending -- and never above the envelope. The
+ * encoder is set to keep its frame rate, so a cut shrinks the picture and
+ * the frames keep coming.
+ */
+const RATE_CONTROL_INTERVAL_MS = 2_000;
+const RATE_CONTROL_RISE_HIGH_MS = 200;
+const RATE_CONTROL_RISE_LOW_MS = 80;
+const RATE_CONTROL_CUT = 0.75;
+const RATE_CONTROL_CLIMB = 1.25;
+const RATE_CONTROL_CLEAN_CHECKS = 3;
+const RATE_CONTROL_MIN_KBPS = 800;
+
+/** Pure: the next cap in kbit/s given the current one, the round trip and
+ * the lowest round trip seen so far on this link. */
+export function nextSendCapKbps(
+  capKbps: number,
+  rttMs: number | null,
+  baselineMs: number | null,
+  cleanChecks: number,
+  maxKbps: number,
+): { capKbps: number; cleanChecks: number } {
+  if (rttMs === null || baselineMs === null) return { capKbps, cleanChecks };
+  const rise = rttMs - baselineMs;
+  if (rise > RATE_CONTROL_RISE_HIGH_MS) {
+    return {
+      capKbps: Math.max(RATE_CONTROL_MIN_KBPS, Math.round(capKbps * RATE_CONTROL_CUT)),
+      cleanChecks: 0,
+    };
+  }
+  if (rise < RATE_CONTROL_RISE_LOW_MS) {
+    const clean = cleanChecks + 1;
+    if (clean >= RATE_CONTROL_CLEAN_CHECKS && capKbps < maxKbps) {
+      return {
+        capKbps: Math.min(maxKbps, Math.round(capKbps * RATE_CONTROL_CLIMB)),
+        cleanChecks: 0,
+      };
+    }
+    return { capKbps, cleanChecks: clean };
+  }
+  return { capKbps, cleanChecks: 0 };
+}
+
+/**
+ * The envelope for a captured size: the cap scaled to the picture, a start
+ * a cellular uplink can carry and a floor the encoder can still keep its
+ * frame rate at once it is told to shrink the picture rather than skip
+ * frames (addLocalTrack). The C++ backend receives through the KVS
+ * WebRTC C SDK, which sends none of the feedback Chromium uses to grow its
+ * estimate from the 300 kbit/s it starts at; left alone, the sender stays at
+ * the floor forever and the picture arrives tiny. These become Chromium's SDP knobs for
+ * exactly that case, ignored by browsers that lack them. An unknown size
+ * takes the live capture policy's.
+ */
+export function bitrateEnvelope(width: number, height: number): BitrateEnvelope {
+  const pixels =
+    width > 0 && height > 0 ? width * height : LIVE_CAPTURE.width * LIVE_CAPTURE.height;
+  const scaled = Math.round((BITRATE_AT_4K_BPS * pixels) / PIXELS_AT_4K);
+  const maxBps = Math.min(BITRATE_AT_4K_BPS, Math.max(BITRATE_FLOOR_BPS, scaled));
+  const maxKbps = Math.round(maxBps / 1000);
+  return {
+    maxBps,
+    maxKbps,
+    startKbps: Math.min(maxKbps, START_KBPS),
+    minKbps: Math.min(maxKbps, MIN_KBPS),
+  };
+}
+
+/** How often a connected session reports its statistics to the relay's log,
+ * and how soon after connecting the first report goes. */
+const DIAGNOSTIC_INTERVAL_MS = 5_000;
+const DIAGNOSTIC_FIRST_AFTER_MS = 1_500;
+const DIAGNOSTIC_BACKLOG_MAX = 20;
+
+/** Counters from the previous statistics report, for rates. */
+export interface StatsCounters {
+  at: number;
+  bytesSent: number;
+}
+
+function statNumber(entry: Record<string, unknown> | null | undefined, key: string): number | null {
+  const value = entry?.[key];
+  return typeof value === "number" ? value : null;
+}
+
+function statString(entry: Record<string, unknown> | null | undefined, key: string): string | null {
+  const value = entry?.[key];
+  return typeof value === "string" ? value : null;
+}
+
+function describeCandidateEntry(entry: Record<string, unknown> | undefined): string {
+  if (!entry) return "?";
+  const type = statString(entry, "candidateType") ?? "?";
+  const protocol = statString(entry, "protocol") ?? "";
+  const address = statString(entry, "address") ?? statString(entry, "ip") ?? "?";
+  const port = statNumber(entry, "port") ?? "?";
+  return `${type} ${protocol} ${address}:${port}`.replace(/\s+/g, " ");
+}
+
+/** One ICE candidate as "host udp 10.0.0.2:51234", from the browser's object. */
+export function describeCandidate(candidate: RTCIceCandidate): string {
+  const type = candidate.type ?? "?";
+  const protocol = candidate.protocol ?? "";
+  const address = candidate.address ?? "?";
+  const port = candidate.port ?? "?";
+  return `${type} ${protocol} ${address}:${port}`.replace(/\s+/g, " ");
+}
+
+/** The same for a candidate that came over signaling, from its SDP line. */
+export function describeCandidateInit(candidate: RTCIceCandidateInit): string {
+  const line = candidate.candidate ?? "";
+  const fields = line.replace(/^candidate:/, "").split(" ");
+  const type = /typ (\S+)/.exec(line)?.[1] ?? "?";
+  return `${type} ${(fields[2] ?? "").toLowerCase()} ${fields[4] ?? "?"}:${fields[5] ?? "?"}`.replace(
+    /\s+/g,
+    " ",
+  );
+}
+
+/**
+ * Pure: one line summarising a getStats() report for the relay's log -- the
+ * selected candidate pair (the path the media takes, with its round-trip time
+ * and the sender's bandwidth estimate), what the encoder is sending (frames,
+ * rate since the previous report, size, frame rate, what limits it) and what
+ * the backend's receiver reports back (loss). Every field is optional: Safari
+ * and Chromium expose different subsets.
+ */
+export function summariseStats(
+  entries: Iterable<Record<string, unknown>>,
+  previous: StatsCounters | null,
+  now: number,
+): { line: string; counters: StatsCounters | null } {
+  const byId = new Map<string, Record<string, unknown>>();
+  let outbound: Record<string, unknown> | null = null;
+  let remoteInbound: Record<string, unknown> | null = null;
+  let transport: Record<string, unknown> | null = null;
+  const pairs: Record<string, unknown>[] = [];
+  for (const entry of entries) {
+    const id = statString(entry, "id");
+    if (id) byId.set(id, entry);
+    const kind = statString(entry, "kind") ?? statString(entry, "mediaType");
+    switch (entry["type"]) {
+      case "outbound-rtp":
+        if (kind === "video" || outbound === null) outbound = entry;
+        break;
+      case "remote-inbound-rtp":
+        if (kind === "video" || remoteInbound === null) remoteInbound = entry;
+        break;
+      case "transport":
+        transport = entry;
+        break;
+      case "candidate-pair":
+        pairs.push(entry);
+        break;
+    }
+  }
+
+  const parts: string[] = [];
+
+  const selectedId = statString(transport, "selectedCandidatePairId");
+  const selected =
+    pairs.find((pair) => statString(pair, "id") === selectedId) ??
+    pairs.find((pair) => pair["nominated"] === true && pair["state"] === "succeeded") ??
+    pairs.find((pair) => pair["state"] === "succeeded") ??
+    null;
+  if (selected) {
+    const local = byId.get(statString(selected, "localCandidateId") ?? "");
+    const remote = byId.get(statString(selected, "remoteCandidateId") ?? "");
+    parts.push(`path ${describeCandidateEntry(local)} -> ${describeCandidateEntry(remote)}`);
+    const rtt = statNumber(selected, "currentRoundTripTime");
+    if (rtt !== null) parts.push(`rtt ${Math.round(rtt * 1000)} ms`);
+    const estimate = statNumber(selected, "availableOutgoingBitrate");
+    if (estimate !== null) parts.push(`estimate ${Math.round(estimate / 1000)} kbit/s`);
+    const requests = statNumber(selected, "requestsSent");
+    const responses = statNumber(selected, "responsesReceived");
+    if (requests !== null && responses !== null) parts.push(`checks ${responses}/${requests}`);
+  } else {
+    parts.push("path none");
+  }
+
+  if (outbound) {
+    const frames = statNumber(outbound, "framesSent") ?? statNumber(outbound, "framesEncoded");
+    parts.push(`sent ${frames ?? "?"} frames`);
+    const bytes = statNumber(outbound, "bytesSent");
+    if (previous && bytes !== null && now > previous.at) {
+      parts.push(`${Math.round(((bytes - previous.bytesSent) * 8) / (now - previous.at))} kbit/s`);
+    }
+    const width = statNumber(outbound, "frameWidth");
+    const height = statNumber(outbound, "frameHeight");
+    if (width && height) parts.push(`${width}x${height}`);
+    const fps = statNumber(outbound, "framesPerSecond");
+    if (fps !== null) parts.push(`${Math.round(fps)} fps`);
+    const target = statNumber(outbound, "targetBitrate");
+    if (target !== null) parts.push(`target ${Math.round(target / 1000)} kbit/s`);
+    const limitation = statString(outbound, "qualityLimitationReason");
+    if (limitation && limitation !== "none") parts.push(`limited by ${limitation}`);
+    const implementation = statString(outbound, "encoderImplementation");
+    if (implementation) parts.push(implementation);
+    const nacks = statNumber(outbound, "nackCount");
+    if (nacks) parts.push(`nack ${nacks}`);
+    const plis = statNumber(outbound, "pliCount");
+    if (plis) parts.push(`pli ${plis}`);
+  } else {
+    parts.push("no outbound video statistics");
+  }
+
+  if (remoteInbound) {
+    const reported: string[] = [];
+    const lost = statNumber(remoteInbound, "packetsLost");
+    if (lost !== null) reported.push(`lost ${lost}`);
+    const fraction = statNumber(remoteInbound, "fractionLost");
+    if (fraction !== null) reported.push(`loss ${(fraction * 100).toFixed(1)}%`);
+    const rtt = statNumber(remoteInbound, "roundTripTime");
+    if (rtt !== null) reported.push(`rtt ${Math.round(rtt * 1000)} ms`);
+    if (reported.length > 0) parts.push(`backend reports ${reported.join(" ")}`);
+  }
+
+  const bytesSent = statNumber(outbound, "bytesSent");
+  const counters = bytesSent !== null ? { at: now, bytesSent } : null;
+  return { line: parts.join(" · "), counters };
+}
+
+/**
+ * Pure: the SDP with the video bit-rate knobs set, for both our offer and the
+ * backend's answer (Chromium reads them from either). Adds `b=AS` to each
+ * video section and the `x-google-*-bitrate` parameters to every H.264
+ * format line; lines that already carry them are left alone.
+ */
+export function tuneVideoSdp(sdp: string, bitrate: BitrateEnvelope): string {
+  const { maxKbps } = bitrate;
+  const lines = sdp.split(/\r?\n/);
+  const out: string[] = [];
+  let inVideo = false;
+  for (const line of lines) {
+    if (line.startsWith("m=")) inVideo = line.startsWith("m=video");
+    if (
+      inVideo &&
+      line.startsWith("a=fmtp:") &&
+      /profile-level-id=/i.test(line) &&
+      !/x-google-start-bitrate/.test(line)
+    ) {
+      out.push(
+        `${line};x-google-start-bitrate=${bitrate.startKbps};x-google-min-bitrate=${bitrate.minKbps};x-google-max-bitrate=${maxKbps}`,
+      );
+      continue;
+    }
+    out.push(line);
+    if (line.startsWith("m=video") && !lines.some((l) => l.startsWith("b=AS:")))
+      out.push(`b=AS:${maxKbps}`);
+  }
+  return out.join("\r\n");
+}
 
 /**
  * Pure: the encoder statistics from a stats report, given the previous
@@ -155,6 +463,9 @@ export function parseEncoderStats(
 }
 
 export class WebRTCLiveSession {
+  /** The envelope for the stream being sent; set from the camera track's
+   * settings when an attempt opens. */
+  private bitrate: BitrateEnvelope = bitrateEnvelope(0, 0);
   private state: WebRTCConnectionState = "idle";
   private lastDetail = "";
   /**
@@ -172,6 +483,9 @@ export class WebRTCLiveSession {
   private intentionallyClosed = false;
   private timerId: ReturnType<typeof setTimeout> | null = null;
   private stableTimerId: ReturnType<typeof setTimeout> | null = null;
+  /** Diagnostics reported before a relay socket was open (see report). */
+  private diagnosticBacklog: string[] = [];
+  private statsCounters: StatsCounters | null = null;
   private readonly telemetryListeners = new Set<OverlayTelemetryListener>();
   /**
    * Telemetry that arrived before anything was listening.
@@ -335,8 +649,15 @@ export class WebRTCLiveSession {
       pendingLocalCandidates: [],
       queue: Promise.resolve(),
       disposed: false,
+      statsTimer: null,
+      rateTimer: null,
+      videoSender: null,
+      sendCapKbps: 0,
+      cleanChecks: 0,
+      rttFloorMs: null,
     };
     this.attempt = attempt;
+    this.statsCounters = null;
 
     this.setState(
       this.retryCount === 0 ? "connecting-relay" : "reconnecting",
@@ -355,6 +676,7 @@ export class WebRTCLiveSession {
         // dropped, and a lost candidate can mean a connection that never
         // establishes with nothing to show for it.
         this.flushLocalCandidates(attempt);
+        this.flushDiagnostics(attempt);
         if (this.retryCount === 0) {
           this.setState("waiting-for-viewer", "Waiting for the processing pipeline.");
         }
@@ -380,12 +702,27 @@ export class WebRTCLiveSession {
       { signal },
     );
 
-    stream.getTracks().forEach((track) => this.addLocalTrack(pc, track, stream));
+    const settings = stream.getVideoTracks?.()[0]?.getSettings?.();
+    this.bitrate = bitrateEnvelope(settings?.width ?? 0, settings?.height ?? 0);
+    attempt.sendCapKbps = this.bitrate.maxKbps;
+    this.report(
+      `bitrate cap ${this.bitrate.maxKbps} kbit/s, start ${this.bitrate.startKbps}, floor ${this.bitrate.minKbps}`,
+    );
+    stream.getTracks().forEach((track) => this.addLocalTrack(attempt, pc, track, stream));
+
+    pc.addEventListener(
+      "iceconnectionstatechange",
+      () => {
+        if (!this.isStale(attempt)) this.report(`ice ${pc.iceConnectionState}`);
+      },
+      { signal },
+    );
 
     pc.addEventListener(
       "connectionstatechange",
       () => {
         if (this.isStale(attempt)) return;
+        this.report(`connection ${pc.connectionState}`);
         if (pc.connectionState === "connected") {
           this.onConnected(attempt);
         } else if (
@@ -403,6 +740,7 @@ export class WebRTCLiveSession {
       "icecandidate",
       (event) => {
         if (this.isStale(attempt) || !event.candidate) return;
+        this.report(`local candidate ${describeCandidate(event.candidate)}`);
         const candidate = event.candidate.toJSON();
         if (ws.readyState === WebSocket.OPEN) {
           this.send(ws, { type: "ice-candidate", candidate });
@@ -453,13 +791,19 @@ export class WebRTCLiveSession {
    * Adds the camera track with the sender configured for the research
    * setting rather than for a video call: H.264 first, because that is the
    * codec every phone encodes in hardware (VP8/VP9 are often software
-   * there); a bit-rate cap high enough that 4K is not silently downscaled;
-   * and resolution held under load, so a frame rate that falls is visible
-   * as such instead of being hidden by a smaller picture. Everything here is
+   * there); a bit-rate cap sized to the capture so the picture is not
+   * silently downscaled (bitrateEnvelope);
+   * and frame rate held under load, so a poor link shrinks the picture
+   * rather than thinning the frames the detector needs. Everything here is
    * optional API, feature-detected, so an older browser (or the test
    * environment) falls back to a plain addTrack.
    */
-  private addLocalTrack(pc: RTCPeerConnection, track: MediaStreamTrack, stream: MediaStream) {
+  private addLocalTrack(
+    attempt: Attempt,
+    pc: RTCPeerConnection,
+    track: MediaStreamTrack,
+    stream: MediaStream,
+  ) {
     if (track.kind !== "video" || typeof pc.addTransceiver !== "function") {
       pc.addTrack(track, stream);
       return;
@@ -467,7 +811,7 @@ export class WebRTCLiveSession {
     const transceiver = pc.addTransceiver(track, {
       direction: "sendonly",
       streams: [stream],
-      sendEncodings: [{ maxBitrate: MAX_VIDEO_BITRATE_BPS }],
+      sendEncodings: [{ maxBitrate: this.bitrate.maxBps }],
     });
     try {
       const capabilities = RTCRtpSender.getCapabilities?.("video");
@@ -481,9 +825,15 @@ export class WebRTCLiveSession {
     }
     try {
       const params = transceiver.sender.getParameters();
-      params.degradationPreference = "maintain-resolution";
-      if (params.encodings.length > 0) params.encodings[0]!.maxBitrate = MAX_VIDEO_BITRATE_BPS;
+      // Frame rate over resolution: when the link cannot carry the rate,
+      // the encoder sends a smaller picture at the full rate rather than a
+      // full picture at a few frames a second. The detector works on a
+      // 640-pixel letterbox of the frame, so a smaller picture costs it
+      // little; a missing frame costs the shot.
+      params.degradationPreference = "maintain-framerate";
+      if (params.encodings.length > 0) params.encodings[0]!.maxBitrate = this.bitrate.maxBps;
       void transceiver.sender.setParameters(params).catch(() => undefined);
+      attempt.videoSender = transceiver.sender;
     } catch {
       // Same: best effort.
     }
@@ -514,6 +864,20 @@ export class WebRTCLiveSession {
     this.clearTimer();
     this.setState("connected", "Tracking shots.");
 
+    if (attempt.statsTimer === null) {
+      attempt.statsTimer = setInterval(
+        () => void this.reportStats(attempt),
+        DIAGNOSTIC_INTERVAL_MS,
+      );
+      setTimeout(() => void this.reportStats(attempt), DIAGNOSTIC_FIRST_AFTER_MS);
+    }
+    if (attempt.rateTimer === null && attempt.videoSender) {
+      attempt.rateTimer = setInterval(
+        () => void this.controlRate(attempt),
+        RATE_CONTROL_INTERVAL_MS,
+      );
+    }
+
     // The retry budget is restored only once the link has actually held.
     // Clearing it on every "connected" would let a flapping connection
     // retry indefinitely, because each brief success would reset the
@@ -540,6 +904,7 @@ export class WebRTCLiveSession {
    */
   private failAttempt(attempt: Attempt, detail: string) {
     if (this.isStale(attempt) || this.intentionallyClosed) return;
+    this.report(`attempt ${this.retryCount + 1} failed: ${detail}`);
     this.disposeAttempt(attempt);
 
     const nextAttempt = this.retryCount + 1;
@@ -573,11 +938,12 @@ export class WebRTCLiveSession {
       await this.sendOffer(attempt);
     } else if (msg.type === "answer") {
       await attempt.pc.setRemoteDescription(
-        new RTCSessionDescription({ type: "answer", sdp: msg.sdp }),
+        new RTCSessionDescription({ type: "answer", sdp: tuneVideoSdp(msg.sdp, this.bitrate) }),
       );
       if (this.isStale(attempt)) return;
       await this.flushRemoteCandidates(attempt);
     } else if (msg.type === "ice-candidate") {
+      this.report(`remote candidate ${describeCandidateInit(msg.candidate)}`);
       // A candidate that arrives before the answer cannot be added yet.
       // The relay broadcasts, so that ordering is not guaranteed, and
       // silently dropping one can mean a connection that never completes.
@@ -596,8 +962,11 @@ export class WebRTCLiveSession {
     if (attempt.offerState !== "none") return;
     attempt.offerState = "creating";
     try {
-      const offer = await attempt.pc.createOffer();
+      const created = await attempt.pc.createOffer();
       if (this.isStale(attempt)) return;
+      const offer = created.sdp
+        ? { type: created.type, sdp: tuneVideoSdp(created.sdp, this.bitrate) }
+        : created;
       await attempt.pc.setLocalDescription(offer);
       if (this.isStale(attempt)) return;
       if (offer.sdp) this.send(attempt.ws, { type: "offer", sdp: offer.sdp });
@@ -647,6 +1016,14 @@ export class WebRTCLiveSession {
   private disposeAttempt(attempt: Attempt) {
     attempt.disposed = true;
     attempt.abort.abort();
+    if (attempt.statsTimer !== null) {
+      clearInterval(attempt.statsTimer);
+      attempt.statsTimer = null;
+    }
+    if (attempt.rateTimer !== null) {
+      clearInterval(attempt.rateTimer);
+      attempt.rateTimer = null;
+    }
     try {
       attempt.pc.close();
     } catch {
@@ -683,6 +1060,79 @@ export class WebRTCLiveSession {
   private send(ws: WebSocket, message: SignalingMessage) {
     if (ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify(message));
+  }
+
+  /**
+   * Sends one line of phone-side diagnostics to the relay's log (see
+   * src/lib/live-diagnostics.ts). Lines reported before the relay socket is
+   * open wait for it, a few of them, so what went wrong while connecting is
+   * not lost either.
+   */
+  report(detail: string) {
+    const line = `${new Date().toISOString()} ${detail}`;
+    const ws = this.attempt?.ws;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      this.send(ws, { type: "diagnostic", detail: line });
+    } else if (this.diagnosticBacklog.length < DIAGNOSTIC_BACKLOG_MAX) {
+      this.diagnosticBacklog.push(line);
+    }
+  }
+
+  private flushDiagnostics(attempt: Attempt) {
+    const waiting = this.diagnosticBacklog;
+    this.diagnosticBacklog = [];
+    for (const line of waiting) this.send(attempt.ws, { type: "diagnostic", detail: line });
+  }
+
+  /** One step of the delay control (see RATE_CONTROL_INTERVAL_MS). */
+  private async controlRate(attempt: Attempt) {
+    if (this.isStale(attempt) || attempt.pc.connectionState !== "connected") return;
+    const sender = attempt.videoSender;
+    if (!sender) return;
+    const rtt = await this.readRoundTripTimeMs();
+    if (rtt !== null && (attempt.rttFloorMs === null || rtt < attempt.rttFloorMs)) {
+      attempt.rttFloorMs = rtt;
+    }
+    const { maxKbps } = this.bitrate;
+    const next = nextSendCapKbps(
+      attempt.sendCapKbps,
+      rtt,
+      attempt.rttFloorMs,
+      attempt.cleanChecks,
+      maxKbps,
+    );
+    attempt.cleanChecks = next.cleanChecks;
+    if (next.capKbps === attempt.sendCapKbps) return;
+    try {
+      const params = sender.getParameters();
+      if (params.encodings.length === 0) return;
+      params.encodings[0]!.maxBitrate = next.capKbps * 1000;
+      await sender.setParameters(params);
+      const was = attempt.sendCapKbps;
+      attempt.sendCapKbps = next.capKbps;
+      this.report(
+        `rate cap ${was} -> ${next.capKbps} kbit/s (rtt ${rtt} ms, link floor ${attempt.rttFloorMs} ms)`,
+      );
+    } catch {
+      // Best effort: the encoder keeps its current cap.
+    }
+  }
+
+  /** What the browser is sending and over which path, from getStats(). */
+  private async reportStats(attempt: Attempt) {
+    if (this.isStale(attempt) || attempt.pc.connectionState !== "connected") return;
+    try {
+      const report = await attempt.pc.getStats();
+      const entries: Record<string, unknown>[] = [];
+      report.forEach((entry: RTCStats) =>
+        entries.push(entry as unknown as Record<string, unknown>),
+      );
+      const summary = summariseStats(entries, this.statsCounters, Date.now());
+      this.statsCounters = summary.counters;
+      this.report(summary.line);
+    } catch (err) {
+      this.report(`stats unavailable: ${String(err)}`);
+    }
   }
 
   private setState(next: WebRTCConnectionState, detail: string) {

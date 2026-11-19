@@ -126,7 +126,11 @@ export function PageHero({
       <div className="relative flex flex-wrap items-center gap-5">
         {leading}
 
-        <div className="min-w-0 flex-1">
+        {/* A basis as well as flex-1: with only flex-1 the block shrank
+            to whatever a phone left beside the plate, some 80px, and the
+            name was cut mid-word. Below that width it now wraps under
+            the plate and takes the whole band. */}
+        <div className="min-w-0 flex-1 basis-[14rem]">
           <p className="mb-1.5 flex items-center gap-2 text-[0.625rem] font-semibold tracking-[0.2em] text-[var(--hero-muted)] uppercase">
             <span aria-hidden className="h-px w-5 bg-[var(--sec)]" />
             {eyebrow}

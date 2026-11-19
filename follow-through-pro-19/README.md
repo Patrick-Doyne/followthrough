@@ -48,8 +48,11 @@ Configuration is read from `.env.local` (gitignored):
 | `npm run brand` | `scripts/gen-brand-assets.ts`: regenerates `public/brand/` and the favicons from `brand-source/followthrough-logo.png` |
 
 Two more scripts are not run from npm: `scripts/prepare-playback.ts` is
-invoked by the API for every uploaded video (thumbnail plus a conditional
-H.264 playback copy — the upload is never modified), and
+invoked by the API for every uploaded video (thumbnail plus, for a codec
+no browser plays or a rotation flag, an upright H.264 playback copy — the
+upload is never modified); `scripts/live-check.mjs` drives the Live page
+with a fake camera against any origin and `scripts/edge-proxy.mjs` stands
+in for the deployment's proxy and tunnel (`deploy/README.md`); and
 `scripts/gen-theme-properties.ts` regenerates `src/theme-properties.css`
 (the `@property` registrations for the theme tokens) and
 `scripts/gen-theme-recipe.ts` regenerates `src/lib/theme-recipe.ts` (the
@@ -63,19 +66,23 @@ src/
   routes/          file-based routes (see routes/README.md); __root.tsx is the shell + providers
   services/        http.ts (transport, bearer token, ApiError) → followthrough.ts (one function per
                    endpoint) → queries.ts (TanStack Query options); webrtc-live.ts (the live
-                   RTCPeerConnection + relay client); camera.ts; court-geometry.ts (pipeline feet ↔
+                   RTCPeerConnection + relay client, its bitrate envelope and delay control); camera.ts;
+                   court-geometry.ts (pipeline feet ↔
                    court metres, zones); shot-corrections.ts (client-only overrides)
   types/           telemetry.ts (API models), api.ts (envelopes), overlay-telemetry.ts (the C++ wire schema)
   lib/             overlay-renderer.ts (the analysis overlay), overlay-replay/-panels/-palette/-export,
                    telemetry-shots.ts + live-shot.ts (shots derived from telemetry), shot-insights.ts
-                   (chart maths), format.ts / intl.ts / i18n.ts, theme.ts, settings-boot.ts, shortcuts.ts
+                   (chart maths), overlay-stage.ts (canvas sizing), playback-format.ts, live-recording.ts,
+                   live-diagnostics.ts, format.ts / intl.ts / i18n.ts, theme.ts, settings-boot.ts, shortcuts.ts
   state/           providers: auth, settings (+ sync), notifications, undo, commands, subscription
-  hooks/           use-live-score, use-live-health, use-session-shots, use-all-shots, use-overlay-panels, …
+  hooks/           use-live-score, use-live-health, use-fullscreen, use-session-shots, use-all-shots,
+                   use-overlay-panels, …
   components/      video/ (LiveVideo, FollowThroughOverlay, TelemetryOverlayCanvas, VideoPlayer,
                    VideoGallery, UploadVideoDialog, ShotFeed, DownloadOverlayButton), analytics/ (charts),
                    calendar/, dashboard/, settings/, layout/AppShell, common/, a11y/, brand/, ui/
   styles.css       design tokens for light, dark and high-contrast; theme-properties.css is generated
-scripts/           prepare-playback.ts, shoot.mjs, gen-brand-assets.ts, gen-theme-*.ts
+scripts/           prepare-playback.ts, live-check.mjs, edge-proxy.mjs, shoot.mjs, gen-brand-assets.ts,
+                   gen-theme-*.ts
 public/brand/      logo lockup and badge; brand-source/ holds the supplied original
 ```
 
@@ -90,16 +97,21 @@ public/brand/      logo lockup and badge; brand-source/ holds the supplied origi
   aggregates, not individual shots. `lib/telemetry-shots.ts` derives `Shot`
   records from a video's stream (`GET /videos/{id}/telemetry`), and
   `use-session-shots` / `use-all-shots` gather them for the charts.
-- **Playback.** `VideoPlayer` plays the recording (or its browser-playable
-  copy) and `TelemetryOverlayCanvas` draws the analysis over it from the
-  stored telemetry, in the current theme; `DownloadOverlayButton` records
-  video and overlay together for a copy with the analysis on it.
+- **Playback.** `VideoPlayer` decodes the recording (or its playback copy)
+  and `TelemetryOverlayCanvas` draws the video frame and the analysis into
+  one canvas from the stored telemetry, in the current theme, cropped to
+  the picture when the pipeline cropped a letterboxed frame. The controls
+  fade after 3 s; fullscreen on an iPhone pins the surface over the page
+  (`hooks/use-fullscreen.ts`). `DownloadOverlayButton` records video and
+  overlay together for a copy with the analysis on it.
 - **Live.** `LiveVideo` captures the camera, `WebRTCLiveSession` sends it to
   the C++ backend and receives per-frame telemetry on a DataChannel,
-  `FollowThroughOverlay` draws video and overlay into one canvas, and that
-  canvas is what gets recorded and uploaded when the session ends. Every
-  number on the page (score, counters, feed, chart, Eagle-Eye) comes from
-  that DataChannel.
+  `FollowThroughOverlay` draws video and overlay into the on-screen canvas,
+  a preview. The recording is a separate canvas holding the upright camera
+  picture, recorded and uploaded when the session ends and then analysed
+  by the offline pipeline (`sessionsService.processVideo`). Every number
+  on the live page (score, counters, feed, chart, Eagle-Eye) comes from
+  that DataChannel; the saved session's come from the offline pass.
 - **Settings.** One versioned document (`state/settings.ts`) is stored in
   `localStorage` first and synced to the account once per session; a boot
   script applies theme, density, contrast and motion before first paint.

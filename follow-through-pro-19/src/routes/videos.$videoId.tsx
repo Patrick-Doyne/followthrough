@@ -12,11 +12,11 @@ import { EmptyState, ErrorState, LoadingState } from "@/components/common/states
 import { HeroDivider, HeroStrong, PageHero } from "@/components/common/PageHero";
 import { AppShell, PageContainer } from "@/components/layout/AppShell";
 import { ReplayArt } from "@/components/video/ReplayArt";
-import { TelemetryOverlayCanvas } from "@/components/video/TelemetryOverlayCanvas";
+import { TelemetryOverlayCanvas, type FrameView } from "@/components/video/TelemetryOverlayCanvas";
 import { DownloadOverlayButton } from "@/components/video/DownloadOverlayButton";
 import { VideoPlayer, type VideoPlayerHandle } from "@/components/video/VideoPlayer";
 import { Button } from "@/components/ui/button";
-import { fmtClock, fmtDate, fmtDistanceOrUnknown, fmtShotType } from "@/lib/format";
+import { fmtClock, fmtDate, fmtDistanceOrUnknown, fmtShotType, fmtRounded } from "@/lib/format";
 import { videoPlaybackUrlQuery, videoQuery, videoTelemetryQuery } from "@/services/queries";
 import { cursorBoundaries, isTakenBy, quantiseCursor, shotAt, tallyAt } from "@/lib/shot-cursor";
 import { shotsFromTelemetry } from "@/lib/telemetry-shots";
@@ -73,6 +73,8 @@ function VideoDetailRoute() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [currentTime, setCurrentTime] = useState(t);
   const playerRef = useRef<VideoPlayerHandle>(null);
+  // See TelemetryOverlayCanvas.onViewport.
+  const [shape, setShape] = useState<FrameView | null>(null);
   /* Held in state, not a ref: the download button only appears once both
      surfaces exist, and a ref would not re-render to reveal it. */
   const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
@@ -208,6 +210,7 @@ function VideoDetailRoute() {
               {video.data.status === "COMPLETE" ? (
                 <VideoPlayer
                   onVideoElement={setVideoEl}
+                  shape={shape}
                   renderOverlay={(element, paused) =>
                     /* Unconditional. Nothing in the pipeline writes the
                        analysis into a recording any more, so there is no
@@ -220,6 +223,7 @@ function VideoDetailRoute() {
                         fps={telemetry.data.fps}
                         paused={paused}
                         onCanvas={setOverlayCanvas}
+                        onViewport={setShape}
                       />
                     ) : null
                   }
@@ -290,7 +294,7 @@ function VideoDetailRoute() {
                         ["Analyzed shots", String(video.data.analyzedShots)],
                         ["Shooting %", `${video.data.shootingPercentage.toFixed(1)}%`],
                         ["Duration", fmtClock(video.data.durationSeconds)],
-                        ["File size", `${video.data.sizeMb} MB`],
+                        ["File size", `${fmtRounded(video.data.sizeMb, 1)} MB`],
                       ].map(([label, value]) => (
                         <div key={label}>
                           <dt className="label-caps">{label}</dt>

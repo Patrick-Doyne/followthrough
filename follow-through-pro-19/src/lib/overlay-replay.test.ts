@@ -5,9 +5,10 @@ import {
   frameIndexAt,
   indexTelemetry,
   REBUILD_WINDOW,
+  sameCrop,
   viewportFromTelemetry,
 } from "@/lib/overlay-replay";
-import { AUTHORED_VIEWPORT } from "@/lib/overlay-renderer";
+import { AUTHORED_VIEWPORT, viewportForFrame } from "@/lib/overlay-renderer";
 
 /** A frame as the pipeline writes one, trimmed to what the overlay reads. */
 const frame = (id: number, extra: Record<string, unknown> = {}) => ({
@@ -209,5 +210,123 @@ describe("createOverlayReplay", () => {
   it("survives a stream with no frames at all", () => {
     const replay = createOverlayReplay([{ type: "metadata", fps: 30 }]);
     expect(() => replay.stateAt(10)).not.toThrow();
+  });
+});
+
+describe("createOverlayReplay viewportAt", () => {
+  it("follows a source that changed shape mid-recording", () => {
+    const portrait = {
+      type: "frame",
+      frame_width: 720,
+      frame_height: 1280,
+      ball: null,
+      player: null,
+      rim: null,
+      net: null,
+    };
+    const landscape = {
+      type: "frame",
+      frame_width: 1280,
+      frame_height: 720,
+      ball: null,
+      player: null,
+      rim: null,
+      net: null,
+    };
+    const replay = createOverlayReplay([
+      { ...portrait, frame_id: 0 },
+      { ...portrait, frame_id: 1 },
+      { ...landscape, frame_id: 2 },
+      { ...landscape, frame_id: 3 },
+    ]);
+    expect(replay.viewport).toEqual(viewportForFrame(720, 1280));
+    expect(replay.viewportAt(1)).toEqual(viewportForFrame(720, 1280));
+    expect(replay.viewportAt(2)).toEqual(viewportForFrame(1280, 720));
+    expect(replay.viewportAt(99)).toEqual(viewportForFrame(1280, 720));
+    expect(replay.viewportAt(-1)).toEqual(replay.viewport);
+  });
+
+  it("remaps each frame onto its own surface, not the first frame's", () => {
+    const replay = createOverlayReplay([
+      {
+        type: "frame",
+        frame_id: 0,
+        frame_width: 720,
+        frame_height: 1280,
+        ball: null,
+        player: null,
+        rim: { x1: 0, y1: 0, x2: 720, y2: 1280 },
+        net: null,
+      },
+      {
+        type: "frame",
+        frame_id: 1,
+        frame_width: 1280,
+        frame_height: 720,
+        ball: null,
+        player: null,
+        rim: { x1: 0, y1: 0, x2: 1280, y2: 720 },
+        net: null,
+      },
+    ]);
+    const wide = viewportForFrame(1280, 720);
+    expect(replay.frames[1]!.rim).toMatchObject({ x2: wide.width, y2: wide.height });
+  });
+});
+
+describe("createOverlayReplay cropAt", () => {
+  const base = { type: "frame", ball: null, player: null, rim: null, net: null };
+  const replay = createOverlayReplay([
+    { ...base, frame_id: 0, frame_width: 720, frame_height: 1280 },
+    {
+      ...base,
+      frame_id: 1,
+      frame_width: 720,
+      frame_height: 408,
+      view_rect: [0, 436, 720, 408],
+      source_width: 720,
+      source_height: 1280,
+    },
+    {
+      ...base,
+      frame_id: 2,
+      frame_width: 720,
+      frame_height: 408,
+      view_rect: [0, 0, 0, 0],
+      source_width: 720,
+      source_height: 1280,
+    },
+    { ...base, frame_id: 3, frame_width: 720, frame_height: 408, view_rect: [0, 436, 720, 408] },
+  ]);
+
+  it("reads the picture rectangle the pipeline cropped to", () => {
+    expect(replay.cropAt(1)).toEqual({
+      x: 0,
+      y: 436,
+      width: 720,
+      height: 408,
+      sourceWidth: 720,
+      sourceHeight: 1280,
+    });
+  });
+
+  it("is null for a whole frame, an empty rectangle, or one without its source size", () => {
+    expect(replay.cropAt(0)).toBeNull();
+    expect(replay.cropAt(2)).toBeNull();
+    expect(replay.cropAt(3)).toBeNull();
+  });
+
+  it("before the first frame, takes the first frame's crop", () => {
+    expect(replay.cropAt(-1)).toBeNull();
+  });
+});
+
+describe("sameCrop", () => {
+  const crop = { x: 0, y: 436, width: 720, height: 408, sourceWidth: 720, sourceHeight: 1280 };
+  it("compares the rectangle, and null only with null", () => {
+    expect(sameCrop(crop, { ...crop })).toBe(true);
+    expect(sameCrop(crop, { ...crop, y: 432 })).toBe(false);
+    expect(sameCrop(null, null)).toBe(true);
+    expect(sameCrop(crop, null)).toBe(false);
   });
 });

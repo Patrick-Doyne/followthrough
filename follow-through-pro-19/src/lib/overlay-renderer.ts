@@ -1327,24 +1327,24 @@ export function renderFromPersistent(
 }
 
 /**
- * Draws the overlay alone onto a transparent canvas, with no video
- * underneath.
+ * Draws the overlay alone, without the video frame.
  *
- * <p>For playback of a stored recording: TelemetryOverlayCanvas lays a
- * transparent canvas over the <video> element and draws the analysis on it
- * from the stored telemetry, so the recording is never touched and the
- * overlay takes the viewer's current theme. Live sessions keep using
- * renderFromPersistent, because there the whole point is that video and
- * overlay share one canvas for captureStream to record.
+ * <p>For playback of a stored recording: TelemetryOverlayCanvas draws the
+ * video frame itself (cropped to the picture when the pipeline cropped
+ * one) and then this on top, with `keepBackground`, so the recording is
+ * never touched and the overlay takes the viewer's current theme. Without
+ * `keepBackground` the canvas is cleared to transparent first. The live
+ * canvas uses renderFromPersistent, which draws the camera frame too.
  */
 export function renderOverlayFromPersistent(
   ctx: CanvasRenderingContext2D,
   state: OverlayPersistentState,
   viewport: OverlayViewport = AUTHORED_VIEWPORT,
   layout: OverlayPanelLayout = staticPanelLayout(viewport),
+  options: { keepBackground?: boolean } = {},
 ) {
   if (!state.lastFrame) return;
-  render(ctx, null, toRenderInput(state), viewport, layout);
+  render(ctx, null, toRenderInput(state), viewport, layout, options.keepBackground ?? false);
 }
 
 /** Callers above have already established lastFrame is present. */
@@ -1369,13 +1369,14 @@ function render(
   state: RenderInput,
   viewport: OverlayViewport,
   layout: OverlayPanelLayout,
+  keepBackground = false,
 ) {
   const f = state.frame;
 
   if (!videoEl) {
-    // Overlay-only: leave the background transparent so the canvas can
-    // sit over the <video> element.
-    ctx.clearRect(0, 0, viewport.width, viewport.height);
+    // No video to draw: clear to transparent, unless the caller drew the
+    // picture itself first and asked for it to be kept.
+    if (!keepBackground) ctx.clearRect(0, 0, viewport.width, viewport.height);
   } else if (videoEl.readyState >= 2) {
     // readyState 2 = HAVE_CURRENT_DATA: the standard check for "safe to
     // drawImage this without pulling a stale/black frame."

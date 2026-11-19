@@ -7,12 +7,13 @@ import {
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
-import { type ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { RouteAnnouncer, SkipToContentLink } from "@/components/a11y/RouteAnnouncer";
 import { SessionTimeout } from "@/components/a11y/SessionTimeout";
 import { Toaster } from "@/components/ui/sonner";
+import { describeError, reportDiagnostic } from "@/lib/live-diagnostics";
 import { settingsBootScript } from "@/lib/settings-boot";
 import { AuthProvider } from "@/state/auth";
 import { CommandsProvider } from "@/state/commands";
@@ -46,6 +47,10 @@ function NotFoundComponent() {
 function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   console.error(error);
   const router = useRouter();
+  // A phone has no console; the live session's log is the next best place.
+  useEffect(() => {
+    reportDiagnostic(`page did not load: ${describeError(error)}`);
+  }, [error]);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
@@ -56,6 +61,10 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
         <p className="mt-2 text-sm text-muted-foreground">
           Something went wrong on our end. You can try refreshing or head back home.
         </p>
+        <details className="mt-3 text-left text-xs text-muted-foreground">
+          <summary className="cursor-pointer">Technical details</summary>
+          <pre className="mt-2 whitespace-pre-wrap break-words">{describeError(error, 6)}</pre>
+        </details>
         <div className="mt-6 flex flex-wrap justify-center gap-2">
           <button
             onClick={() => {

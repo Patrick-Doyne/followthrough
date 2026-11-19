@@ -1,4 +1,3 @@
-import type { ChartPalette } from "@/lib/chart-theme";
 import { MIN_SAMPLE, type Rate } from "@/lib/shot-insights";
 
 /**
@@ -37,10 +36,4 @@ export function rateTone(percentage: number | null, overall: number | null): Rat
   if (percentage >= overall + 5) return "make";
   if (percentage <= overall - 5) return "miss";
   return "neutral";
-}
-
-export function toneColor(tone: RateTone, chart: ChartPalette): string {
-  if (tone === "make") return chart.make;
-  if (tone === "miss") return chart.miss;
-  return chart.primary;
 }

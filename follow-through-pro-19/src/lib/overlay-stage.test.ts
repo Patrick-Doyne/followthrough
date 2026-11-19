@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { fromStage, stageMapping, toStage } from "@/lib/overlay-stage";
+import { fromStage, stageMapping, toStage, backingSize } from "@/lib/overlay-stage";
 import { AUTHORED_VIEWPORT, viewportForFrame } from "@/lib/overlay-renderer";
 
 describe("stageMapping", () => {
@@ -58,5 +58,31 @@ describe("toStage / fromStage", () => {
   it("does not divide by zero before the stage is measured", () => {
     const mapping = stageMapping(AUTHORED_VIEWPORT, { width: 0, height: 0 });
     expect(fromStage({ x: 10, y: 10 }, mapping)).toEqual({ x: 0, y: 0 });
+  });
+});
+
+describe("backingSize", () => {
+  const viewport = { width: 3840, height: 2160 };
+
+  it("is the box in device pixels", () => {
+    expect(backingSize({ width: 640, height: 360 }, 2, viewport)).toEqual({
+      width: 1280,
+      height: 720,
+    });
+  });
+
+  it("never exceeds the authored surface, keeping the box's shape", () => {
+    expect(backingSize({ width: 4000, height: 2250 }, 1, viewport)).toEqual({
+      width: 3840,
+      height: 2160,
+    });
+    expect(backingSize({ width: 2000, height: 2000 }, 3, viewport)).toEqual({
+      width: 2160,
+      height: 2160,
+    });
+  });
+
+  it("is null for a box with no size", () => {
+    expect(backingSize({ width: 0, height: 0 }, 2, viewport)).toBeNull();
   });
 });

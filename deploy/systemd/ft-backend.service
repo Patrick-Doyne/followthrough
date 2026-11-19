@@ -1,0 +1,22 @@
+[Unit]
+Description=FollowThrough live detection backend (follow_through_webrtc)
+After=network.target ft-relay.service
+Wants=ft-relay.service
+
+[Service]
+User=ubuntu
+# Must run from cpp/build: the TensorRT engine paths are relative to it.
+WorkingDirectory=/home/ubuntu/followthrough/cpp/build
+Environment=FT_RELAY_HOST=localhost
+Environment=FT_RELAY_PORT=8080
+Environment=FT_STUN_URL=stun:stun.l.google.com:19302
+Environment=LD_LIBRARY_PATH=/usr/local/cuda-13.3/lib64:/home/ubuntu/kvs-webrtc-sdk/build:/home/ubuntu/kvs-webrtc-sdk/open-source/lib
+ExecStart=/home/ubuntu/followthrough/cpp/build/follow_through_webrtc
+Restart=always
+RestartSec=3
+# SIGINT, not SIGTERM: the binary shuts down through its own signal handler.
+KillSignal=SIGINT
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

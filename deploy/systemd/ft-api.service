@@ -1,0 +1,25 @@
+[Unit]
+Description=FollowThrough REST API (Spring Boot, :8082/api/v1)
+After=network.target
+
+[Service]
+User=ubuntu
+# Run from springboot/ so local-data/ and local-video-storage/ land where
+# LOCAL_DEV.md says they do.
+WorkingDirectory=/home/ubuntu/followthrough/springboot
+# FOLLOWTHROUGH_JWT_SECRET and FT_PUBLIC_ORIGIN (the https origin the phone
+# uses, e.g. the tunnel URL) come from this file; deploy/set-public-origin.sh
+# writes the origin and restarts this unit.
+EnvironmentFile=/etc/followthrough/api.env
+# forward-headers-strategy makes Spring trust Caddy's X-Forwarded-Proto and
+# X-Forwarded-Host, so a request from the https page is seen as same-origin
+# rather than rejected as a cross-origin request from an unknown origin.
+ExecStart=/usr/bin/java -jar /home/ubuntu/followthrough/springboot/target/followthrough-api-0.0.1-SNAPSHOT.jar \
+  --server.forward-headers-strategy=framework \
+  --followthrough.cors.allowed-origins=${FT_PUBLIC_ORIGIN} \
+  --followthrough.storage.local.base-url=${FT_PUBLIC_ORIGIN}/api/v1
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

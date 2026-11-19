@@ -60,13 +60,29 @@ public class LocalUploadUrlService implements UploadUrlService {
 
     @Override
     public UploadUrl generate(String sessionId, String contentType) {
-        String extension =
-                EXTENSIONS_BY_CONTENT_TYPE.getOrDefault(
-                        contentType == null ? "" : contentType.toLowerCase(java.util.Locale.ROOT),
-                        UNKNOWN_EXTENSION);
+        String extension = EXTENSIONS_BY_CONTENT_TYPE.getOrDefault(essentialType(contentType), UNKNOWN_EXTENSION);
         String storageKey = "sessions/%s/%s%s".formatted(sanitize(sessionId), UUID.randomUUID(), extension);
         String uploadUrl = baseUrl + "/videos/local-blob/" + storageKey;
         return new UploadUrl(uploadUrl, storageKey, Instant.now().plus(TTL));
+    }
+
+    /**
+     * The media type without its parameters, lower-cased.
+     *
+     * <p>A browser's recorder reports the type it recorded as, and a
+     * phone's is {@code video/mp4;codecs=avc1}: the parameters say which
+     * codec, and they are not part of the type. Matched whole, that
+     * string was unknown here, every live recording from a phone was
+     * stored as ".bin" and served as an octet-stream, and the phone's own
+     * browser -- which trusts the type it is told -- refused to play it.
+     */
+    static String essentialType(String contentType) {
+        if (contentType == null) {
+            return "";
+        }
+        int semicolon = contentType.indexOf(';');
+        String type = semicolon < 0 ? contentType : contentType.substring(0, semicolon);
+        return type.trim().toLowerCase(java.util.Locale.ROOT);
     }
 
     private static String sanitize(String sessionId) {

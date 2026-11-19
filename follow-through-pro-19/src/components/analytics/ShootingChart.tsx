@@ -78,7 +78,7 @@ export function ShootingChart({
       <ResponsiveContainer width="100%" height={height}>
         <LineChart
           data={merged}
-          margin={{ top: 8, right: 12, bottom: 4, left: -12 }}
+          margin={{ top: 8, right: 12, bottom: 4, left: 0 }}
           onClick={(state) => {
             const payload = state?.activePayload?.[0]?.payload as SeriesPoint | undefined;
             if (payload && onPointSelect) onPointSelect(payload.sessionId);

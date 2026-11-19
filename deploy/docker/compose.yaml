@@ -1,0 +1,48 @@
+# One container, all processes, on the host's network so WebRTC's UDP media
+# reaches the backend directly (a bridge network would hide the instance's
+# address from ICE). Run from this directory:
+#
+#   docker compose up -d --build      # first time: builds the image (30-45 min)
+#   docker compose logs -f            # supervisord; per-process logs are in the container
+#   docker compose exec followthrough cat /var/log/followthrough/public-origin
+#
+# FOLLOWTHROUGH_JWT_SECRET comes from /etc/followthrough/api.env, which
+# deploy/terraform/user_data.sh writes with a random value.
+# Anywhere else (WSL, a hand-built instance) create that file first:
+#   FOLLOWTHROUGH_JWT_SECRET=<openssl rand -base64 48>
+services:
+  followthrough:
+    # Named, so `docker exec followthrough ...` works wherever compose was
+    # run from; without it compose named it docker-followthrough-1.
+    container_name: followthrough
+    image: followthrough:latest
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    network_mode: host
+    restart: unless-stopped
+    env_file:
+      - /etc/followthrough/api.env
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      # Database, uploads and recordings survive a container rebuild.
+      - followthrough-data:/app/springboot/local-data
+      - followthrough-storage:/app/springboot/local-video-storage
+      # Engines built for this GPU on first start.
+      - followthrough-engines:/var/lib/followthrough/engines
+      - followthrough-logs:/var/log/followthrough
+
+volumes:
+  followthrough-data:
+  followthrough-storage:
+  followthrough-engines:
+  followthrough-logs:

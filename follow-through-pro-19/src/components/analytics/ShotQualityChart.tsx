@@ -97,7 +97,7 @@ export function ShotQualityChart({
       <ResponsiveContainer width="100%" height={height}>
         <ComposedChart
           data={trend}
-          margin={{ top: 8, right: 8, bottom: 4, left: -14 }}
+          margin={{ top: 8, right: 8, bottom: 4, left: 0 }}
           onClick={(state) => {
             const point = state?.activePayload?.[0]?.payload as (typeof trend)[number] | undefined;
             if (point && onSelectSession) onSelectSession(point.sessionId);

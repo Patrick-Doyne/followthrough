@@ -42,6 +42,17 @@ class LocalUploadUrlServiceTest {
     }
 
     @Test
+    void ignoresTheParametersARecorderAppendsToItsType() {
+        // What a phone's MediaRecorder reports: the codec is a parameter
+        // of the type, not part of it, and it used to make the whole
+        // string unknown here.
+        assertThat(service.generate("session-001", "video/mp4;codecs=avc1").storageKey())
+                .endsWith(".mp4");
+        assertThat(service.generate("session-001", "video/webm; codecs=vp9,opus").storageKey())
+                .endsWith(".webm");
+    }
+
+    @Test
     void keepsTheSessionInTheKeySoUploadsLandBesideEachOther() {
         assertThat(service.generate("session-001", "video/mp4").storageKey())
                 .startsWith("sessions/session-001/");

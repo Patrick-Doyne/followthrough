@@ -35,8 +35,26 @@ import type { FrameTelemetry, ShotEventMessage } from "@/types/overlay-telemetry
  * any single shot, which is the longest-lived thing in the state. */
 export const REBUILD_WINDOW = 360;
 
+/** Where a frame's picture sits inside the recorded file, when the file
+ * is letterboxed: the pipeline analysed only this rectangle (see
+ * picture_rect in the C++ offline pipeline), and the player shows only
+ * it. Absent when the picture fills the file. */
+export interface FrameCrop {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  sourceWidth: number;
+  sourceHeight: number;
+}
+
 interface Indexed {
-  frames: { at: number; frame: FrameTelemetry }[];
+  frames: {
+    at: number;
+    frame: FrameTelemetry;
+    viewport: OverlayViewport;
+    crop: FrameCrop | null;
+  }[];
   shots: { at: number; shot: ShotEventMessage }[];
   /** Index of the last frame at or before each frame index, for seeding. */
   keypointAt: number[];
@@ -66,10 +84,17 @@ export function indexTelemetry(messages: unknown[]): Indexed {
     if (message["type"] === "frame") {
       const at = Number(message["frame_id"]);
       if (!Number.isFinite(at)) continue;
-      const frame = remapFrameCoordinates(raw as FrameTelemetry, viewport);
+      // Each frame is remapped onto a surface of its own shape, not the
+      // recording's first. A phone turned mid-session sends portrait
+      // frames and then landscape ones, and squeezing the landscape
+      // frames onto the portrait surface put every box in the wrong
+      // place. Nearly every recording has one shape throughout, and
+      // then this is the same surface every time.
+      const own = viewportOfFrame(message) ?? viewport;
+      const frame = remapFrameCoordinates(raw as FrameTelemetry, own);
       if (frame.court_keypoints) lastKeypoint = frames.length;
       keypointAt.push(lastKeypoint);
-      frames.push({ at, frame });
+      frames.push({ at, frame, viewport: own, crop: cropOfFrame(message) });
     } else if (message["type"] === "shot_event") {
       const at = Number(message["frame_id"]);
       if (!Number.isFinite(at)) continue;
@@ -91,12 +116,35 @@ export function indexTelemetry(messages: unknown[]): Indexed {
  */
 export function viewportFromTelemetry(messages: unknown[]): OverlayViewport {
   for (const raw of messages) {
-    const message = raw as Message;
-    const width = Number(message["frame_width"]);
-    const height = Number(message["frame_height"]);
-    if (width > 0 && height > 0) return viewportForFrame(width, height);
+    const own = viewportOfFrame(raw as Message);
+    if (own) return own;
   }
   return AUTHORED_VIEWPORT;
+}
+
+/** Whether two crops show the same rectangle (null being the whole file). */
+export function sameCrop(a: FrameCrop | null, b: FrameCrop | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+}
+
+/** The crop the pipeline applied to this frame, or null for the whole file. */
+function cropOfFrame(message: Message): FrameCrop | null {
+  const rect = message["view_rect"];
+  const sourceWidth = Number(message["source_width"]);
+  const sourceHeight = Number(message["source_height"]);
+  if (!Array.isArray(rect) || rect.length !== 4 || !(sourceWidth > 0) || !(sourceHeight > 0))
+    return null;
+  const [x, y, width, height] = rect.map(Number);
+  if (!(width! > 0) || !(height! > 0)) return null;
+  return { x: x!, y: y!, width: width!, height: height!, sourceWidth, sourceHeight };
+}
+
+/** The surface one message's own size calls for, or null when it has none. */
+function viewportOfFrame(message: Message): OverlayViewport | null {
+  const width = Number(message["frame_width"]);
+  const height = Number(message["frame_height"]);
+  return width > 0 && height > 0 ? viewportForFrame(width, height) : null;
 }
 
 /** The last frame at or before `frameId`, or -1. */
@@ -139,6 +187,15 @@ export interface OverlayReplay {
    * lines up with the picture underneath.
    */
   viewport: OverlayViewport;
+  /**
+   * The surface for the frame at or before `frameId`: `viewport` unless
+   * the source changed shape mid-recording (a phone turned over), in
+   * which case the frames after the turn are on a surface of the new
+   * shape and the canvas must follow.
+   */
+  viewportAt: (frameId: number) => OverlayViewport;
+  /** The crop to show at `frameId`, or null for the whole file. */
+  cropAt: (frameId: number) => FrameCrop | null;
 }
 
 export function createOverlayReplay(messages: unknown[]): OverlayReplay {
@@ -196,5 +253,13 @@ export function createOverlayReplay(messages: unknown[]): OverlayReplay {
     lastApplied: () => applied,
     frames: indexed.frames.map((entry) => entry.frame),
     viewport: indexed.viewport,
+    viewportAt(frameId: number) {
+      const index = frameIndexAt(indexed, frameId);
+      return index < 0 ? indexed.viewport : indexed.frames[index]!.viewport;
+    },
+    cropAt(frameId: number) {
+      const index = frameIndexAt(indexed, frameId);
+      return index < 0 ? (indexed.frames[0]?.crop ?? null) : indexed.frames[index]!.crop;
+    },
   };
 }

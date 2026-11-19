@@ -4,7 +4,7 @@ Known gaps and future work, kept here so they survive across development
 sessions. Delete an item once it ships. `ARCHITECTURE.md` describes what is
 built; nothing below is.
 
-Last reviewed against the code on 29 September 2026.
+Last reviewed against the code on 18 November 2026.
 
 ## Open
 
@@ -31,26 +31,61 @@ Last reviewed against the code on 29 September 2026.
 
 ### Product and pipeline
 
-- **Live sessions attach to a fixed seeded session.** `routes/live.tsx`
-  hard-codes `LIVE_SESSION_ID = "session-001"` (created by `DataSeeder`)
-  so the end-of-session upload and ingest succeed. A live session should
-  create its own `TrainingSession` when it starts and ingest into that.
 - **Shot corrections are client-only.** `services/shot-corrections.ts`
   keeps a person's make/miss/false-positive overrides in memory for the
   page load, and the UI says so. Persisting them needs an endpoint of the
   shape already written in that file's header
   (`PUT`/`DELETE /sessions/{id}/shots/{sequence}/correction`) and a place
   to store them — the backend has no shot-level rows, only per-video
-  telemetry streams.
+  telemetry streams. On the live page they are lost when the session
+  ends: the saved session is scored by the offline pass over the
+  recording (`routes/live.tsx`), which never sees them.
 - **The live overlay is not delayed to match the loop latency.** The
   camera preview is drawn as soon as the frame is captured and the overlay
   when the telemetry for that frame returns, so the overlay trails the
   picture by the round trip. Holding the preview back by the measured
   delay and keying it to the frame id would align them.
+- **ONNX Runtime 1.30.0 is no longer on Microsoft's GitHub releases** (the
+  `v1.30.0` tag answers 404 as of 18 November 2026), so
+  `scripts/fetch-demo-assets.sh` fails at that step and `WALKTHROUGH.md`'s
+  CPU detector cannot be built from a fresh clone. The live container skips
+  it (`FETCH_ORT=0`). Point the script at a release that exists and confirm
+  the CPU binary still builds and matches the five-shot result.
 - **CPU tier is built but not deployed.** `follow_through_batch_cpu` runs
   the ONNX exports on ONNX Runtime without CUDA (the Fargate shape), but the
-  API only ever invokes the GPU binary and there is no container packaging
-  for either tier.
+  API only ever invokes the GPU binary. The GPU tier is packaged in
+  `deploy/docker/Dockerfile` (the API in the container runs
+  `follow_through_batch_gpu`); the CPU tier has no container.
+- **Live capture above 720p60.** The backend answers H.264 level 4.0,
+  which allows 720p at 60 but not 1080p at 60; that needs level 4.1 or
+  above in `transceiverSetFmtp` (`cpp/follow-through-webrtc.cpp`) and a
+  per-frame budget the detection loop does not have at 1080p60.
+- **One live viewer per backend.** `follow_through_webrtc` ignores offers
+  while a session is up, so a second phone (or `scripts/live-check.mjs`
+  during a phone test) makes the running session fail. More viewers means
+  a process per session (the planned ECS shape) or a multi-peer backend.
+- **No bandwidth feedback from the backend.** The KVS WebRTC C SDK sends
+  neither transport-wide congestion control nor REMB, so the browser's
+  estimate only decays and `services/webrtc-live.ts` substitutes a
+  round-trip-based control from the sender's own statistics. Real feedback
+  would let the sender use what a link carries instead of inferring it.
+- **A turned part of a live recording is kept at reduced resolution.**
+  The recording keeps the shape the session started in and letterboxes
+  the other orientation (`LiveVideo.tsx`); the offline pass crops to the
+  picture (`picture_rect`), so that part is analysed at the letterboxed
+  size. Full size for both would need a recording that can change shape
+  mid-file, or one file per orientation.
+- **Unused live-telemetry path in the API.** `POST /sessions/{id}/videos`,
+  `PUT /videos/{id}/telemetry` and `LiveRecordingPreparer` stored a live
+  session's own telemetry; no page calls them since the saved session goes
+  through `/process`. Remove them, or keep them for a client that scores on
+  the device.
+- **The by-hand deployment runs the stub processor.**
+  `deploy/systemd/ft-api.service` sets no processing engine, although
+  `deploy/ec2-setup.sh` builds `follow_through_batch_gpu`; the container
+  path runs it. Add the `--followthrough.processing.engine=cpp` and
+  `--followthrough.cpp.*` flags from `deploy/docker/start-api.sh` to the
+  unit to match.
 - **C++ builds have no `CMAKE_BUILD_TYPE`**, so both binaries compile
   without optimisation flags. Before switching to `Release`, re-run the
   reference clip and confirm the shot outcomes and telemetry are unchanged,
@@ -100,6 +135,18 @@ Last reviewed against the code on 29 September 2026.
   pagination; **no export** (CSV/PDF) of analytics or session history.
 
 ## Shipped (brief history, newest first)
+
+- **18 Nov 2026 — deployed, and the phone made a real client.** One EC2
+  GPU instance from Terraform and a single Docker image (supervisord, Caddy,
+  Cloudflare tunnel), image in ECR. Live from an iPhone: 720p at 60 with the
+  answer at H.264 level 4.0, a sender with its own delay-based rate control
+  for cellular uplinks, a display-sized live canvas, and phone-side
+  diagnostics in the relay's log. The live recording is the upright picture
+  drawn into a canvas and is analysed by the offline pipeline, which
+  auto-rotates and crops letterboxed frames to the picture. Upright playback
+  copies for any rotation flag, recordings stored under their real type,
+  page served no-cache. Phone layout: fullscreen on an iPhone, calendar,
+  sessions list, filters; playback controls that fade.
 
 - **29 Sept 2026 — mock layer removed; docs rewritten.** The frontend now
   talks only to the real API (`VITE_API_MOCKS`, the in-memory stores and

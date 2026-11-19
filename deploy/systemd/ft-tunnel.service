@@ -1,0 +1,17 @@
+[Unit]
+Description=FollowThrough public HTTPS via a Cloudflare quick tunnel
+After=network-online.target caddy.service
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+# A quick tunnel needs no account or domain. It prints a random
+# https://<name>.trycloudflare.com address on every start; read it with
+#   journalctl -u ft-tunnel --no-pager | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' | tail -1
+# or run deploy/set-public-origin.sh, which also hands it to the API.
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:80
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

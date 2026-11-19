@@ -35,19 +35,16 @@ import { ShortcutSheet } from "@/components/common/ShortcutSheet";
 import { isTypingTarget } from "@/lib/shortcuts";
 import { useAxisProps, useChartTheme } from "@/lib/chart-theme";
 import { fmtDateTime } from "@/lib/format";
-import { sessionsService } from "@/services/followthrough";
+import { sessionsService, videosService } from "@/services/followthrough";
 
 import { UpgradePrompt, useEntitlements } from "@/state/subscription";
 import type { Shot } from "@/types/telemetry";
 
-/**
- * Stand-in until live sessions create their own real TrainingSession row
- * (an open item in BACKLOG.md). Using a session ID that actually exists in
- * the backend -- the seeder creates this one -- lets the end-of-session
- * recording upload/ingest (see LiveVideo) succeed today instead of 404ing
- * against a session that was never persisted.
- */
-const LIVE_SESSION_ID = "session-001";
+import type { TrainingSession } from "@/types/telemetry";
+
+/** Key for the shot corrections and Eagle-Eye markers of a session that has
+ * no training-session row (a practice run, or one that failed to create). */
+const UNSAVED_LIVE_SESSION = "live";
 
 export const Route = createFileRoute("/live")({
   head: () => ({
@@ -84,6 +81,16 @@ function LiveTraining() {
   const queryClient = useQueryClient();
   const [elapsed, setElapsed] = useState(0);
   const [active, setActive] = useState(false);
+  // The training session this live session records into, created when it
+  // starts (unless it is a practice run) so the recording has a row to
+  // attach to. The ref is what the upload callback reads, so the callback
+  // stays stable and never restarts the camera.
+  const [liveSessionId, setLiveSessionId] = useState<string | null>(null);
+  const liveSessionRef = useRef<TrainingSession | null>(null);
+  // A practice run still tracks shots; it just is not kept. Offered
+  // because the alternative is people avoiding the product while warming
+  // up, to keep their numbers clean. Declared here because start() reads it.
+  const [practiceRun, setPracticeRun] = useState(false);
 
   useEffect(() => {
     if (!active) return;
@@ -98,7 +105,31 @@ function LiveTraining() {
   const start = useCallback(() => {
     setActive(true);
     setElapsed(0);
-  }, []);
+    liveSessionRef.current = null;
+    setLiveSessionId(null);
+    if (practiceRun) return;
+    const startedAt = new Date();
+    sessionsService
+      .create({
+        name: `Live session — ${fmtDateTime(startedAt)}`,
+        date: startedAt.toISOString(),
+        durationMinutes: 0,
+        location: "Live camera",
+        trainingType: "SHOOTING",
+      })
+      .then((session) => {
+        liveSessionRef.current = session;
+        setLiveSessionId(session.sessionId);
+      })
+      .catch((error: unknown) => {
+        toast.error("Couldn't create a training session for this recording", {
+          description:
+            error instanceof Error
+              ? `${error.message} The session still runs, but its recording cannot be saved.`
+              : "The session still runs, but its recording cannot be saved.",
+        });
+      });
+  }, [practiceRun]);
 
   const stop = useCallback(() => {
     setActive(false);
@@ -106,25 +137,47 @@ function LiveTraining() {
 
   const handleRecordingUploaded = useCallback(
     (result: RecordingUploaded) => {
-      // The pipeline's own totals, so the saved session agrees with what
-      // the score bug showed during it.
-      const finished = scoreRef.current;
+      const session = liveSessionRef.current;
+      if (!session) {
+        toast.error("Couldn't save this session's recording", {
+          description: "No training session was created when it started.",
+        });
+        return;
+      }
+      // The saved session is scored by the offline pipeline over the
+      // recording, not by what the live stream produced. The live
+      // detector sees the stream a phone's uplink can carry, which at a
+      // court is a megabit and a shrunken picture; the recording is the
+      // full 720p at 2.5 Mbit/s, the same thing an upload gets. So the
+      // live run is the preview and the recording is the record. The
+      // gallery shows the video as processing until the pass completes,
+      // then its telemetry, totals and thumbnail are the offline ones.
       sessionsService
-        .ingestVideo(LIVE_SESSION_ID, {
+        .processVideo(session.sessionId, {
           title: `Live Session — ${fmtDateTime(new Date())}`,
           date: new Date().toISOString(),
-          durationSeconds: result.durationSeconds,
           storageKey: result.storageKey,
-          analyzedShots: finished.attempts,
-          shootingPercentage: finished.percentage ?? 0,
+          durationSeconds: result.durationSeconds,
           sizeMb: result.sizeMb,
         })
+        .then(() =>
+          // The session row was created with no duration; now it has one.
+          sessionsService.update(session.sessionId, {
+            name: session.name,
+            date: session.date,
+            durationMinutes: Math.max(1, Math.round(result.durationSeconds / 60)),
+            location: session.location,
+            trainingType: session.trainingType,
+          }),
+        )
         .then(() => {
           toast.success("Recording saved", {
-            description: "This session's video is now available in your library.",
+            description:
+              "It is being analysed by the offline pipeline; the library shows it when that finishes.",
           });
-          void queryClient.invalidateQueries({ queryKey: ["session-videos", LIVE_SESSION_ID] });
+          void queryClient.invalidateQueries({ queryKey: ["session-videos", session.sessionId] });
           void queryClient.invalidateQueries({ queryKey: ["videos"] });
+          void queryClient.invalidateQueries({ queryKey: ["sessions"] });
         })
         .catch((error: unknown) => {
           toast.error("Couldn't save this session's recording", {
@@ -135,6 +188,19 @@ function LiveTraining() {
     [queryClient],
   );
 
+  // The save's progress, as a toast that counts up. LiveVideo keeps the
+  // screen awake for it: a locked phone suspends the upload.
+  const handleRecordingProgress = useCallback((fraction: number | null) => {
+    if (fraction === null) {
+      toast.dismiss("recording-upload");
+      return;
+    }
+    toast.loading(`Saving recording… ${Math.round(fraction * 100)}%`, {
+      id: "recording-upload",
+      description: "Keep this page open until it finishes.",
+    });
+  }, []);
+
   const handleRecordingError = useCallback((error: unknown) => {
     toast.error("Couldn't upload this session's recording", {
       description: error instanceof Error ? error.message : "Please try again.",
@@ -144,20 +210,12 @@ function LiveTraining() {
   // Counters and the shot feed read the same DataChannel as the score bug,
   // so they cannot disagree with it.
   const [liveScore, setLiveScore] = useState<LiveScore>(EMPTY_LIVE_SCORE);
-  // Read by the upload callback, which is deliberately stable: closing over
-  // the score would rebuild it on every shot and restart the camera effect.
-  const scoreRef = useRef<LiveScore>(EMPTY_LIVE_SCORE);
-  scoreRef.current = liveScore;
   const [countersOpen, setCountersOpen] = useState(true);
   const [shortcutHinted, setShortcutHinted] = useState(false);
-  // A practice run still tracks shots; it just is not kept. Offered
-  // because the alternative is people avoiding the product while warming
-  // up, to keep their numbers clean.
-  const [practiceRun, setPracticeRun] = useState(false);
   const [selectedLiveShot, setSelectedLiveShot] = useState<Shot | null>(null);
   const notify = useNotify();
   const corrections = useShotCorrections(
-    LIVE_SESSION_ID,
+    liveSessionId ?? UNSAVED_LIVE_SESSION,
     shotCorrectionsService.correct,
     // Surfaced once per failure rather than per keystroke, and marked
     // urgent because the person is standing at the result of their own
@@ -184,9 +242,9 @@ function LiveTraining() {
   const eagleEyeShots = useMemo<Shot[]>(
     () =>
       liveScore.history
-        .map((shot) => toPlottableShot(shot, LIVE_SESSION_ID))
+        .map((shot) => toPlottableShot(shot, liveSessionId ?? UNSAVED_LIVE_SESSION))
         .filter((shot): shot is Shot => shot !== null),
-    [liveScore.history],
+    [liveScore.history, liveSessionId],
   );
 
   useEffect(() => {
@@ -210,7 +268,9 @@ function LiveTraining() {
       description="Real-time capture and telemetry for an active session."
       actions={
         <>
-          <ShortcutSheet />
+          <span className="[@media(hover:none)]:hidden">
+            <ShortcutSheet />
+          </span>
           {active ? (
             <Button variant="outline" size="sm" onClick={stop}>
               <Square className="size-3.5" aria-hidden />
@@ -232,9 +292,10 @@ function LiveTraining() {
           <LiveVideo
             elapsedSeconds={elapsed}
             active={active}
-            sessionId={LIVE_SESSION_ID}
+            sessionId={liveSessionId}
             onRecordingUploaded={handleRecordingUploaded}
             onRecordingError={handleRecordingError}
+            onRecordingProgress={handleRecordingProgress}
             onScoreChange={setLiveScore}
             onEndSession={stop}
             practiceRun={practiceRun}
